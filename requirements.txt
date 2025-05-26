@@ -1,4 +1,4 @@
-requests
+termcolor
 mmh3
 favicon
 base64
