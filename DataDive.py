@@ -8,6 +8,8 @@ import subprocess
 
 sys.stdout.reconfigure(line_buffering=True)
 
+#Needed for checking if the version is up to date or not
+
 latestversion = requests.get('https://raw.githubusercontent.com/s-0-u-l-z/DataDive/refs/heads/DataDive-Main/version.txt')
 currentversion = 2.01
 
@@ -16,12 +18,9 @@ OK = colored("[OK]", "green")
 ERR = colored("[ERR]", "red")
 WARN = colored("[!]", "yellow")
 
-
+# Needed for checking requirements
 
 def check_and_install_go():
-    global pkg_manager
-    global install_cmds
-    global all_pkg_managers
 
     if shutil.which("go") is not None:
         return
@@ -76,7 +75,11 @@ def check_and_install_aws():
     os.system(install_aws[pkg_manager])
     print(f"{OK} AWS installation complete.")
 
-
+def checkuro():
+    if shutil.which("uro") is not None:
+        return
+    print(f'{ERR} uro is not installed, install it from: https://github.com/s0md3v/uro')
+    sys.exit()
 
 def sleep(time):
     tm.sleep(time)
@@ -108,17 +111,30 @@ for line in banner.split('\n'):
     print(line)
 
 check_and_install_go()
+check_and_install_aws()
+checkuro()
+
+# To run commands and get output from them easier 
 
 def command(cmd):
-    os.system(cmd)
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    print(result.stdout)
+    if result.stderr:
+        print(f"{ERR}", result.stderr)
+
+# Needed for checking requirements
 
 def install_package(go_path):
     print(f"[{INF}] Installing {go_path}")
     command(f"go install {go_path}")
 
+# Needed for wc -l
+
 def get_line_count(file_path):
     result = subprocess.run(['wc', '-l', file_path], capture_output=True, text=True)
     return int(result.stdout.strip().split()[0]) if result.returncode == 0 else 0
+
+#checking requirements 
 
 go_tools = {
     "subfinder": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
@@ -133,7 +149,10 @@ go_tools = {
     "ffuf": "github.com/ffuf/ffuf@latest",
     "nuclei": "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
     "waybackurls": "github.com/tomnomnom/waybackurls@latest",
-    "gf": "github.com/tomnomnom/gf@latest"
+    "gf": "github.com/tomnomnom/gf@latest",
+    "qsreplace": "github.com/tomnomnom/qsreplace@latest",
+    "urlfinder": "-v github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest",
+    "hakrawler": "github.com/hakluke/hakrawler@latest"
 }
 
 def check_if_packages_are_installed(binary):
@@ -157,9 +176,15 @@ def welcome():
     main()
 
 def main():
+
+    # Making sure that environment paths are setup correctly
+
     os.system("export GOPATH=$HOME/go")
     os.system("mkdir ~/.gf")
     os.system("cp GFPattern/* ~/.gf")
+
+    # Finding Subdomains
+
     print(f"\n[{INF}] Starting Subdomain Enumeration...")
     print("")
     sleep(2.5)
@@ -212,14 +237,38 @@ def main():
     command("katana -u alive.txt -jc -o js.txt")
     command("katana -u alive.txt -d 5 -ef woff,css,png,svg,jpg,woff2,jpeg,gif -o allurls.txt")
     print("")
+
+    #Open Redirect Testing
+    
     print(f'[{INF}] Were going to run Gau + Nuclei to find OpenRedirects')
     print("")
     print(colored("Running Gau", "yellow"))
     command("cat subdomains.txt | gau --o Gau-OpenRedirect.txt")
     command("cat Gau-OpenRedirect.txt | gf redirect | uro | qsreplace 'https://evil.com' | httpx -silent -fr -mr 'evil.com'")
     print("")
-    print("Running Nuclei (Subdomaintakeover)")
-    command("cat alive.txt | nuclei -t templates/openRedirect.yaml -c 30")
+    print(colored("Running Nuclei (Subdomaintakeover)", "yellow"))
+    print("")
+    command("cat alive.txt | nuclei -t templates/openRedirect.yaml -c 45")
+    print("")
 
 
-welcome()
+
+    print(f"{INF} Time to use ffuf to replace a redirect query like: returnUrl=, continue=  with a open redirect payload")
+    print("")
+    print(colored("We will use Gau + Katana + Urlfinder + hakrawler to find as much redirect querys as possible", "yellow"))
+    command("cat alive.txt | katana -d 2 -o katana-redirect.txt")
+    command("cat alive.txt | urlfinder -o urlfinder-redirect.txt")
+    command("cat alive.txt | hakrawler > hakrawler-redirect.txt")
+    command("cat katana-redirect.txt urlfinder-redirect.txt hakrawler-redirect.txt Gau-OpenRedirect.txt | uro | sort -u  | tee final-redirect.txt")
+    open_redirect_regex = "returnUrl=|continue=|dest=|destination=|forward=|go=|goto=|login\?to=|login_url=|logout=|next=|next_page=|out=|g=|redir=|redirect=|redirect_to=|redirect_uri=|redirect_url=|return=|returnTo=|return_path=|return_to=|return_url=|rurl=|site=|target=|to=|uri=|url=|qurl=|rit_url=|jump=|jump_url=|originUrl=|origin=|Url=|desturl=|u=|Redirect=|location=|ReturnUrl=|redirect_url=|redirect_to=|forward_to=|forward_url=|destination_url=|jump_to=|go_to=|goto_url=|target_url=|redirect_link="
+    command(f"cat final-redirect.txt | grep -Pi '{open_redirect_regex}' | tee redirect_params.txt")
+    command("cat redirect_params.txt | qsreplace 'https://evil.com' | httpx -silent -fr -mr 'evil.com' >> openredirect-test-1.txt ")
+    command(r'cat redirect_params.txt | qsreplace "https://evil.com" | xargs -I {} curl -s -o /dev/null -w "%{url_effective} -> %{redirect_url}\n" {} >> openredirect-test-2.txt')
+    command(f'subfinder -d {subenumweb} | httpx -silent | gau | gf redirect | uro | qsreplace "https://evil.com" | httpx -silent -fr -mr "evil.com" >> openredirect-test-3.txt')
+    command('cat redirect_params.txt | gf redirect | uro | while read url; do cat payloads/openredirect.txt | while read payload; do echo "$url" | qsreplace "$payload"; done; done | httpx-toolkit -silent -fr -mr "google.com" >> openredirect-test-4.txt')
+
+    
+
+
+if __name__ == "__main__":
+    welcome()
