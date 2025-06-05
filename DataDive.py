@@ -487,7 +487,7 @@ def main():
     sleep(2)
 
     print(f'[{INF}] Step 1: Extracting unique domain names from `alive.txt` (or your initial URL list).')
-    print(f'        Command: cat alive.txt | awk -F/ \'{print $3}\' | sort -u > unique_domains_for_sqli.txt')
+    print(f"        Command: cat alive.txt | awk -F/ '{{print $3}}' | sort -u > unique_domains_for_sqli.txt")
     command("cat alive.txt | awk -F/ '{print $3}' | sort -u > unique_domains_for_sqli.txt",
             'Extracting only the domain (hostname) from each URL in `alive.txt`, '
             'then sorting and removing duplicates to create `unique_domains_for_sqli.txt`. '
