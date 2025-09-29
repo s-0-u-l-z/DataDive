@@ -1,3 +1,17 @@
+#!/usr/bin/env python3
+"""
+DataDive - Advanced Security Reconnaissance and Vulnerability Scanner
+Author: s0ulz
+Version: 2.01
+
+This tool automates the discovery and analysis of security vulnerabilities across:
+- Subdomain enumeration and takeover detection
+- Open redirect vulnerability scanning
+- WAF bypass techniques
+- S3 bucket misconfiguration detection
+- GitHub secret leakage analysis
+"""
+
 import shutil
 from termcolor import colored
 import sys
@@ -5,29 +19,165 @@ import os
 import time as tm
 import requests
 import subprocess
+import json
+from pathlib import Path
 
+# Enable line buffering for real-time output
 sys.stdout.reconfigure(line_buffering=True)
 
-# Needed for checking if the version is up to date or not
-latestversion = requests.get('https://raw.githubusercontent.com/s-0-u-l-z/DataDive/refs/heads/DataDive-Main/version.txt')
-currentversion = 2.01
+# ========================================================================
+# Configuration and Constants
+# ========================================================================
+LATEST_VERSION_URL = 'https://raw.githubusercontent.com/s-0-u-l-z/DataDive/refs/heads/DataDive-Main/version.txt'
+CURRENT_VERSION = 2.01
 
+# Color-coded status indicators
 INF = colored("INF", "blue")
 OK = colored("[OK]", "green")
 ERR = colored("[ERR]", "red")
 WARN = colored("[!]", "yellow")
+PROGRESS = colored("[→]", "cyan")
 
-# Needed for checking requirements
+# Output directories
+OUTPUT_DIR = Path("datadive_output")
+SUBDOMAINS_DIR = OUTPUT_DIR / "subdomains"
+REDIRECT_DIR = OUTPUT_DIR / "open_redirects"
+SQLI_DIR = OUTPUT_DIR / "sql_injection"
+S3_DIR = OUTPUT_DIR / "s3_buckets"
+GITHUB_DIR = OUTPUT_DIR / "github_secrets"
+
+# ========================================================================
+# Utility Functions
+# ========================================================================
+
+def sleep(seconds):
+    """Wrapper for time.sleep for consistent usage"""
+    tm.sleep(seconds)
+
+def create_output_directories():
+    """Create organized output directory structure"""
+    directories = [OUTPUT_DIR, SUBDOMAINS_DIR, REDIRECT_DIR, SQLI_DIR, S3_DIR, GITHUB_DIR]
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+    print(f"{OK} Output directories created in: {OUTPUT_DIR.absolute()}")
+
+def print_section_header(title):
+    """Print a formatted section header"""
+    print(f'\n\n{"="*70}')
+    print(f'[{INF}] {title}')
+    print(f'{"="*70}\n')
+    sleep(1)
+
+def command(cmd, description="", silent=False):
+    """
+    Execute shell commands with enhanced error handling and logging.
+    
+    Args:
+        cmd (str): The shell command to execute
+        description (str): Human-readable explanation of what the command does
+        silent (bool): If True, suppress stdout (but still show errors)
+    
+    Returns:
+        subprocess.CompletedProcess: The result of the command execution
+    """
+    if description and not silent:
+        print(f"[{INF}] {description}")
+        print(f"{PROGRESS} Command: {cmd}")
+    
+    try:
+        result = subprocess.run(
+            cmd, 
+            shell=True, 
+            capture_output=True, 
+            text=True,
+            timeout=300  # 5 minute timeout for long-running commands
+        )
+        
+        if result.stdout and not silent:
+            print(result.stdout)
+        
+        if result.stderr and result.returncode != 0:
+            print(f"{ERR} Error executing command:")
+            print(result.stderr)
+        
+        return result
+        
+    except subprocess.TimeoutExpired:
+        print(f"{ERR} Command timed out after 5 minutes: {cmd}")
+        return None
+    except Exception as e:
+        print(f"{ERR} Unexpected error: {str(e)}")
+        return None
+
+def get_line_count(file_path):
+    """
+    Count lines in a file efficiently.
+    
+    Args:
+        file_path (str): Path to the file
+    
+    Returns:
+        int: Number of lines in the file, or 0 if error
+    """
+    try:
+        result = subprocess.run(['wc', '-l', file_path], capture_output=True, text=True)
+        if result.returncode == 0:
+            return int(result.stdout.strip().split()[0])
+    except (ValueError, IndexError):
+        pass
+    return 0
+
+def file_exists_and_not_empty(filepath):
+    """Check if file exists and has content"""
+    path = Path(filepath)
+    return path.exists() and path.stat().st_size > 0
+
+# ========================================================================
+# Dependency Management
+# ========================================================================
+
+def detect_package_manager():
+    """
+    Auto-detect the system's package manager.
+    
+    Returns:
+        str: Name of detected package manager or None
+    """
+    managers = {
+        "apt": ["apt", "apt-get"],
+        "dnf": ["dnf"],
+        "pacman": ["pacman"],
+        "zypper": ["zypper"],
+        "xbps": ["xbps-install"],
+        "eopkg": ["eopkg"],
+        "apk": ["apk"],
+        "emerge": ["emerge"],
+        "brew": ["brew"],
+        "nix": ["nix-env"]
+    }
+    
+    for manager, commands in managers.items():
+        for cmd in commands:
+            if shutil.which(cmd):
+                return manager
+    return None
 
 def check_and_install_go():
+    """Install Go programming language if not present"""
     if shutil.which("go") is not None:
-        return
+        print(f"{OK} Go is already installed")
+        return True
+    
     print(f"{ERR} Go is not installed on your system.")
-    print("")
-    all_pkg_managers = ["apt", "dnf", "pacman", "zypper", "xbps", "eopkg", "apk", "emerge", "brew", "nix"]
-    print(f"{WARN} Please enter your package manager ({'/'.join(all_pkg_managers)}):")
-    print("")
-    pkg_manager = input("Package manager: ").strip().lower()
+    print(f"{WARN} Go is required for installing reconnaissance tools.")
+    
+    pkg_manager = detect_package_manager()
+    if not pkg_manager:
+        all_pkg_managers = ["apt", "dnf", "pacman", "zypper", "xbps", "eopkg", "apk", "emerge", "brew", "nix"]
+        print(f"{WARN} Could not auto-detect package manager.")
+        print(f"{WARN} Please enter your package manager ({'/'.join(all_pkg_managers)}):")
+        pkg_manager = input("Package manager: ").strip().lower()
+    
     install_cmds = {
         "apt": "sudo apt update && sudo apt install golang -y",
         "dnf": "sudo dnf install golang -y",
@@ -40,26 +190,37 @@ def check_and_install_go():
         "brew": "brew install go",
         "nix": "nix-env -iA nixpkgs.go"
     }
+    
     if pkg_manager not in install_cmds:
         print(f"{ERR} Unsupported or unknown package manager: {pkg_manager}")
-        sys.exit(1)
+        return False
+    
     print(f"[{INF}] Installing Go using {pkg_manager}...")
     os.system(install_cmds[pkg_manager])
-    print(f"{OK} Go installation complete.")
-
+    
+    if shutil.which("go"):
+        print(f"{OK} Go installation complete.")
+        return True
+    else:
+        print(f"{ERR} Go installation failed. Please install manually.")
+        return False
 
 def check_and_install_aws():
-    # This 'pkg_manager' variable is not defined in this scope.
-    # It needs to be passed as an argument or defined globally if used here.
-    # For now, I'm defining a placeholder.
-    # To correctly determine the package manager, you might need to
-    # prompt the user or detect it earlier in your script.
-    pkg_manager = "apt" # Placeholder: Replace with actual package manager logic
-
+    """Install AWS CLI if not present"""
+    if shutil.which("aws") is not None:
+        print(f"{OK} AWS CLI is already installed")
+        return True
+    
+    print(f"{WARN} AWS CLI is not installed. This is needed for S3 bucket analysis.")
+    
+    pkg_manager = detect_package_manager()
+    if not pkg_manager:
+        pkg_manager = "apt"  # Default fallback
+    
     install_aws = {
-        "apt": "sudo apt install awscli",
-        "pacman": "sudo pacman -S aws-cli",
-        "dnf": "sudo dnf install awscli",
+        "apt": "sudo apt install awscli -y",
+        "pacman": "sudo pacman -S aws-cli --noconfirm",
+        "dnf": "sudo dnf install awscli -y",
         "zypper": "sudo zypper install aws-cli-v2",
         "eopkg": "sudo eopkg install aws-cli",
         "xbps": "sudo xbps-install -S aws-cli",
@@ -68,33 +229,52 @@ def check_and_install_aws():
         "nix": "nix-env -iA nixpkgs.awscli2",
         "brew": "brew install awscli"
     }
-
-    if shutil.which("aws") is not None:
-        return
-    print(f"{ERR} AWS is not installed on your system")
-    # This check `if pkg_manager not in install_cmds:` needs to refer to `install_aws` not `install_cmds`.
-    if pkg_manager not in install_aws: # Corrected: checking against install_aws
-        print(f"{ERR} Unsupported or unknown package manager: {pkg_manager}")
-        sys.exit(1)
-    print(f"[{INF}] Installing AWS using {pkg_manager}")
+    
+    if pkg_manager not in install_aws:
+        print(f"{WARN} Cannot auto-install AWS CLI. Please install manually:")
+        print(f"        https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html")
+        return False
+    
+    print(f"[{INF}] Installing AWS CLI using {pkg_manager}")
     os.system(install_aws[pkg_manager])
-    print(f"{OK} AWS installation complete.")
+    
+    if shutil.which("aws"):
+        print(f"{OK} AWS CLI installation complete.")
+        return True
+    else:
+        print(f"{WARN} AWS CLI installation failed. Some S3 features may not work.")
+        return False
 
-def checkuro():
+def check_uro():
+    """Check for uro (URL deduplication tool)"""
     if shutil.which("uro") is not None:
-        return
-    print(f'{ERR} uro is not installed, install it from: https://github.com/s0md3v/uro')
-    sys.exit()
+        print(f"{OK} uro is installed")
+        return True
+    
+    print(f'{WARN} uro is not installed. This tool helps deduplicate URLs.')
+    print(f'{WARN} Install it from: https://github.com/s0md3v/uro')
+    print(f'{WARN} Or run: pip3 install uro')
+    
+    install = input(f"[{INF}] Try to install via pip3? (y/n): ").lower()
+    if install == 'y':
+        os.system("pip3 install uro")
+        return shutil.which("uro") is not None
+    return False
 
 def check_jq():
+    """Install jq (JSON processor) if not present"""
     if shutil.which("jq") is not None:
-        return
-    print(f'{ERR} jq is not installed on your system.')
-    print("")
-    all_pkg_managers = ["apt", "dnf", "pacman", "zypper", "xbps", "eopkg", "apk", "emerge", "brew", "nix"]
-    print(f"{WARN} Please enter your package manager ({'/'.join(all_pkg_managers)}):")
-    print("")
-    pkg_manager = input("Package manager: ").strip().lower()
+        print(f"{OK} jq is already installed")
+        return True
+    
+    print(f'{ERR} jq is not installed. This tool is essential for processing JSON output.')
+    
+    pkg_manager = detect_package_manager()
+    if not pkg_manager:
+        all_pkg_managers = ["apt", "dnf", "pacman", "zypper", "xbps", "eopkg", "apk", "emerge", "brew", "nix"]
+        print(f"{WARN} Please enter your package manager ({'/'.join(all_pkg_managers)}):")
+        pkg_manager = input("Package manager: ").strip().lower()
+    
     install_cmds = {
         "apt": "sudo apt update && sudo apt install jq -y",
         "dnf": "sudo dnf install jq -y",
@@ -107,606 +287,1151 @@ def check_jq():
         "brew": "brew install jq",
         "nix": "nix-env -iA nixpkgs.jq"
     }
+    
     if pkg_manager not in install_cmds:
-        print(f"{ERR} Unsupported or unknown package manager: {pkg_manager}")
-        sys.exit(1)
+        print(f"{ERR} Unsupported package manager: {pkg_manager}")
+        return False
+    
     print(f"[{INF}] Installing jq using {pkg_manager}...")
     os.system(install_cmds[pkg_manager])
-    print(f"{OK} jq installation complete.")
+    
+    if shutil.which("jq"):
+        print(f"{OK} jq installation complete.")
+        return True
+    else:
+        print(f"{ERR} jq installation failed.")
+        return False
 
-
-def sleep(time):
-    tm.sleep(time)
-
-if currentversion != float(latestversion.text.strip()):
-    status = f"({colored('outdated', 'red')})"
-else:
-    status = f"({colored('latest', 'green')})"
-
-banner = f"""
-
-        ██████╗░░█████╗░████████╗░█████╗░██████╗░██╗██╗░░░██╗███████╗
-        ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗██╔══██╗██║██║░░░██║██╔════╝
-        ██║░░██║███████║░░░██║░░░███████║██║░░██║██║╚██╗░██╔╝█████╗░░
-        ██║░░██║██╔══██║░░░██║░░░██║░░██║██║░░██║██║░╚████╔╝░██╔══╝░░
-        ██████╔╝██║░░██║░░░╚═══╝░░██║░░██║██████╔╝██║░░╚██╔╝░░███████╗
-        ╚═════╝░╚═╝░░╚═╝░░░╚═════╝░╚═╝░░╚═╝╚═════╝░╚═╝░░░╚═╝░░░╚══════╝
-
-                                By s0ulz
-
-    [{INF}] Current DataDive version v{currentversion} {status}
-"""
-
-if currentversion > float(latestversion.text.strip()):
-    input(f"{WARN} How tf can the version number of this be higher than the latest version on the official github page?: ")
-    print(colored("YOU EDITED THIS FILE BRUH", "magenta"))
-
-for line in banner.split('\n'):
-    print(line)
-
-# Placeholder for pkg_manager, as it's not defined globally or passed to check_and_install_aws
-# You'll need to decide how to handle this, e.g., by prompting the user earlier.
-# For now, I'm setting it to 'apt' to prevent an error.
-pkg_manager = "apt" # This needs to be correctly set based on user input or detected system.
-
-check_and_install_go()
-check_and_install_aws()
-checkuro()
-check_jq() # Check for jq installation
-
-# To run commands and get output from them easier
-
-def command(cmd, description=""):
+def install_go_package(go_path):
     """
-    Executes a shell command and prints its output.
+    Install a Go-based security tool.
+    
     Args:
-        cmd (str): The shell command to execute.
-        description (str): A brief explanation of what the command does.
+        go_path (str): The Go module path (e.g., github.com/user/tool@latest)
     """
-    if description:
-        print(f"[{INF}] Executing: {description}")
-        print(f"    Command: {cmd}")
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout)
-    if result.stderr:
-        print(f"{ERR}", result.stderr)
-
-# Needed for checking requirements
-
-def install_package(go_path):
     print(f"[{INF}] Installing {go_path}")
     command(f"go install {go_path}", f"Installing Go package {go_path}")
 
-# Needed for wc -l
-
-def get_line_count(file_path):
+def check_go_tools():
     """
-    Gets the number of lines in a file using 'wc -l'.
-    Args:
-        file_path (str): The path to the file.
+    Check and install all required Go-based reconnaissance tools.
+    
     Returns:
-        int: The number of lines in the file, or 0 if an error occurs.
+        dict: Status of each tool (installed: bool)
     """
-    result = subprocess.run(['wc', '-l', file_path], capture_output=True, text=True)
-    return int(result.stdout.strip().split()[0]) if result.returncode == 0 else 0
-
-#checking requirements
-
-go_tools = {
-    "subfinder": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
-    "katana": "github.com/projectdiscovery/katana/cmd/katana@latest",
-    "amass": "github.com/owasp-amass/amass/v3/...@master",
-    "subjack": "github.com/haccer/subjack@latest",
-    "httpx": "github.com/projectdiscovery/httpx/cmd/httpx@latest",
-    "assetfinder": "github.com/tomnomnom/assetfinder@latest",
-    "naabu": "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
-    "gau": "github.com/lc/gau/v2/cmd/gau@latest",
-    "GoPath": "github.com/s-0-u-l-z/GoPath@latest",
-    "ffuf": "github.com/ffuf/ffuf@latest",
-    "nuclei": "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
-    "waybackurls": "github.com/tomnomnom/waybackurls@latest",
-    "gf": "github.com/tomnomnom/gf@latest",
-    "qsreplace": "github.com/tomnomnom/qsreplace@latest",
-    "urlfinder": "github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest",
-    "hakrawler": "github.com/hakluke/hakrawler@latest"
-}
-
-def check_if_packages_are_installed(binary):
-    """
-    Checks if a given binary is installed and installs it if not.
-    Args:
-        binary (str): The name of the binary to check/install.
-    """
-    path = shutil.which(binary)
-    if path:
-        print(f"{OK} {binary} is installed.")
-    else:
-        print(f"{ERR} {binary} is not installed.")
-        install_package(go_tools[binary])
-        if shutil.which(binary):
-            print(f"{OK} {binary} installed successfully.")
+    go_tools = {
+        "subfinder": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+        "katana": "github.com/projectdiscovery/katana/cmd/katana@latest",
+        "amass": "github.com/owasp-amass/amass/v3/...@master",
+        "subjack": "github.com/haccer/subjack@latest",
+        "httpx": "github.com/projectdiscovery/httpx/cmd/httpx@latest",
+        "assetfinder": "github.com/tomnomnom/assetfinder@latest",
+        "naabu": "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
+        "gau": "github.com/lc/gau/v2/cmd/gau@latest",
+        "ffuf": "github.com/ffuf/ffuf@latest",
+        "nuclei": "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
+        "waybackurls": "github.com/tomnomnom/waybackurls@latest",
+        "gf": "github.com/tomnomnom/gf@latest",
+        "qsreplace": "github.com/tomnomnom/qsreplace@latest",
+        "hakrawler": "github.com/hakluke/hakrawler@latest"
+    }
+    
+    tool_status = {}
+    
+    print(f"\n[{INF}] Checking required reconnaissance tools...")
+    print(f"{PROGRESS} This may take a few minutes for first-time setup.\n")
+    
+    for binary, go_path in go_tools.items():
+        path = shutil.which(binary)
+        if path:
+            print(f"{OK} {binary:20s} → Installed at {path}")
+            tool_status[binary] = True
         else:
-            print(f"{ERR} {binary} failed to install.")
+            print(f"{WARN} {binary:20s} → Not found, installing...")
+            install_go_package(go_path)
+            
+            if shutil.which(binary):
+                print(f"{OK} {binary:20s} → Successfully installed")
+                tool_status[binary] = True
+            else:
+                print(f"{ERR} {binary:20s} → Installation failed")
+                tool_status[binary] = False
+    
+    return tool_status
 
-def welcome():
-    print(f"\n[{INF}] Starting DataDive tool checks...")
-    print("")
-    for binary in go_tools:
-        check_if_packages_are_installed(binary)
-    print(f"\n{OK} All tools checked and installed.")
-    main()
+# ========================================================================
+# Version Management
+# ========================================================================
+
+def check_version():
+    """
+    Check if DataDive is up to date.
+    
+    Returns:
+        tuple: (current_version, latest_version, status_message)
+    """
+    try:
+        response = requests.get(LATEST_VERSION_URL, timeout=5)
+        latest_version = float(response.text.strip())
+        
+        if CURRENT_VERSION < latest_version:
+            status = f"({colored('outdated', 'red')})"
+            message = f"{WARN} A newer version (v{latest_version}) is available!"
+        elif CURRENT_VERSION > latest_version:
+            status = f"({colored('dev build', 'yellow')})"
+            message = f"{WARN} You're running a development build"
+        else:
+            status = f"({colored('latest', 'green')})"
+            message = f"{OK} You're running the latest version"
+        
+        return CURRENT_VERSION, latest_version, status, message
+    except Exception as e:
+        status = f"({colored('unknown', 'yellow')})"
+        message = f"{WARN} Could not check for updates: {str(e)}"
+        return CURRENT_VERSION, None, status, message
+
+def print_banner():
+    """Display the DataDive banner with version information"""
+    current, latest, status, message = check_version()
+    
+    banner = f"""
+        ██████╗░░█████╗░████████╗░█████╗░██████╗░██╗██╗░░░██╗███████╗
+        ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗██╔══██╗██║██║░░░██║██╔════╝
+        ██║░░██║███████║░░░██║░░░███████║██║░░██║██║╚██╗░██╔╝█████╗░░
+        ██║░░██║██╔══██║░░░██║░░░██╔══██║██║░░██║██║░╚████╔╝░██╔══╝░░
+        ██████╔╝██║░░██║░░░╚═══╝░░██║░░██║██████╔╝██║░░╚██╔╝░░███████╗
+        ╚═════╝░╚═╝░░╚═╝░░░╚═════╝░╚═╝░░╚═╝╚═════╝░╚═╝░░░╚═╝░░░╚══════╝
+
+                            By s0ulz
+                Advanced Security Reconnaissance Framework
+
+    [{INF}] Current version: v{current} {status}
+    {message}
+    """
+    
+    for line in banner.split('\n'):
+        print(line)
+    
+    sleep(1)
+
+# ========================================================================
+# Subdomain Enumeration Module
+# ========================================================================
+
+def subdomain_enumeration(target):
+    """
+    Comprehensive subdomain discovery using multiple tools.
+    
+    This module combines results from:
+    - Subfinder: Fast passive subdomain discovery
+    - Assetfinder: Additional subdomain sources
+    - Amass: In-depth reconnaissance (rate-limited)
+    
+    Args:
+        target (str): The target domain to scan
+    
+    Returns:
+        str: Path to the combined subdomains file
+    """
+    print_section_header("Subdomain Enumeration & Discovery")
+    
+    print(f"[{INF}] Target domain: {colored(target, 'cyan')}")
+    print(f"[{INF}] This process discovers all subdomains associated with the target")
+    print(f"{PROGRESS} Using multiple data sources for comprehensive coverage\n")
+    sleep(2)
+    
+    # Create subdomain-specific output files
+    subfinder_out = SUBDOMAINS_DIR / "subfinder.txt"
+    assetfinder_out = SUBDOMAINS_DIR / "assetfinder.txt"
+    amass_out = SUBDOMAINS_DIR / "amass.txt"
+    combined_out = SUBDOMAINS_DIR / "all_subdomains.txt"
+    alive_out = SUBDOMAINS_DIR / "alive.txt"
+    status_codes_out = SUBDOMAINS_DIR / "status_codes.txt"
+    
+    # Subfinder - Fast and reliable
+    print(colored("→ Running Subfinder", "yellow"))
+    print(f"{PROGRESS} Subfinder queries multiple sources (crt.sh, VirusTotal, etc.)")
+    command(
+        f'subfinder -d {target} -all -silent >> {subfinder_out}',
+        f'Discovering subdomains for {target} using all available sources'
+    )
+    subfinder_count = get_line_count(str(subfinder_out))
+    print(f"{OK} Subfinder found {subfinder_count} subdomains\n")
+    sleep(1)
+    
+    # Assetfinder - Additional coverage
+    print(colored("→ Running Assetfinder", "yellow"))
+    print(f"{PROGRESS} Assetfinder finds related assets and subdomains")
+    command(
+        f'assetfinder --subs-only {target} >> {assetfinder_out}',
+        f'Finding related subdomains using Assetfinder'
+    )
+    assetfinder_count = get_line_count(str(assetfinder_out))
+    print(f"{OK} Assetfinder found {assetfinder_count} subdomains\n")
+    sleep(1)
+    
+    # Amass - Thorough but slower
+    print(colored("→ Running Amass (30s timeout)", "yellow"))
+    print(f"{PROGRESS} Amass performs deep DNS enumeration")
+    print(f"{WARN} Timeout set to prevent excessive runtime")
+    command(
+        f'amass enum -timeout 30 -norecursive -d {target} >> {amass_out}',
+        f'Running Amass enumeration with controlled timeout'
+    )
+    amass_count = get_line_count(str(amass_out))
+    print(f"{OK} Amass found {amass_count} subdomains\n")
+    sleep(1)
+    
+    # Combine and deduplicate results
+    print(f"[{INF}] Merging results from all tools...")
+    command(
+        f"sort -u {subfinder_out} {assetfinder_out} {amass_out} > {combined_out}",
+        'Combining and deduplicating subdomains from all sources'
+    )
+    total_count = get_line_count(str(combined_out))
+    print(f"{OK} Total unique subdomains discovered: {colored(str(total_count), 'green', attrs=['bold'])}\n")
+    
+    # Probe for live hosts
+    print(colored("→ Probing for live subdomains with httpx", "yellow"))
+    print(f"{PROGRESS} This checks which subdomains are actually responding")
+    
+    if total_count >= 500:
+        print(f"{WARN} Large subdomain list detected, using 50 threads for faster scanning")
+        command(
+            f"httpx -l {combined_out} -o {alive_out} -t 50 -silent",
+            'Checking subdomain availability with increased concurrency'
+        )
+    else:
+        command(
+            f"httpx -l {combined_out} -o {alive_out} -silent",
+            'Checking which subdomains are live and responding'
+        )
+    
+    alive_count = get_line_count(str(alive_out))
+    print(f"{OK} Live subdomains: {colored(str(alive_count), 'green', attrs=['bold'])} out of {total_count}")
+    print(f"{OK} Results saved to: {alive_out}\n")
+    
+    # Get status codes for analysis
+    print(f"[{INF}] Collecting HTTP status codes...")
+    command(
+        f'httpx -l {combined_out} -sc -silent >> {status_codes_out}',
+        'Retrieving HTTP status codes for all subdomains'
+    )
+    
+    # Extract 200 OK responses
+    ok_responses_out = SUBDOMAINS_DIR / "200_ok.txt"
+    command(
+        f"cat {status_codes_out} | grep '\\[200\\]' >> {ok_responses_out}",
+        'Filtering for successful (200 OK) responses'
+    )
+    ok_count = get_line_count(str(ok_responses_out))
+    print(f"{OK} Subdomains with 200 OK status: {ok_count}\n")
+    
+    # Subdomain takeover checks
+    print_section_header("Subdomain Takeover Detection")
+    print(f"{PROGRESS} Checking for vulnerable subdomain configurations...")
+    
+    subjack_out = SUBDOMAINS_DIR / "subjack_results.txt"
+    command(
+        f"subjack -w {combined_out} -t 100 -ssl -v -o {subjack_out}",
+        'Running Subjack to detect potential subdomain takeovers'
+    )
+    
+    nuclei_takeover_out = SUBDOMAINS_DIR / "nuclei_takeover.txt"
+    command(
+        f"nuclei -l {combined_out} -t ~/nuclei-templates/takeovers/ -silent >> {nuclei_takeover_out}",
+        'Using Nuclei templates to detect takeover vulnerabilities'
+    )
+    print(f"{OK} Takeover check results saved to: {SUBDOMAINS_DIR}\n")
+    
+    # Deep crawling with Katana
+    print_section_header("Deep Web Crawling")
+    print(f"{PROGRESS} Crawling live subdomains to discover hidden content...")
+    
+    katana_js_out = SUBDOMAINS_DIR / "katana_js.txt"
+    katana_deep_out = SUBDOMAINS_DIR / "katana_deep.txt"
+    
+    command(
+        f"katana -list {alive_out} -jc -silent -o {katana_js_out}",
+        'Extracting JavaScript files from live subdomains'
+    )
+    
+    command(
+        f"katana -list {alive_out} -d 5 -ef woff,css,png,svg,jpg,woff2,jpeg,gif,ico -silent -o {katana_deep_out}",
+        'Performing deep crawl (depth=5) to discover all URLs'
+    )
+    
+    js_count = get_line_count(str(katana_js_out))
+    deep_count = get_line_count(str(katana_deep_out))
+    print(f"{OK} JavaScript files discovered: {js_count}")
+    print(f"{OK} Total URLs discovered: {deep_count}\n")
+    
+    return str(combined_out)
+
+# ========================================================================
+# Open Redirect Module
+# ========================================================================
+
+def open_redirect_testing(target, subdomains_file):
+    """
+    Test for open redirect vulnerabilities using multiple methods.
+    
+    Open redirects can be used for phishing and bypassing security controls.
+    This module tests for them using:
+    - URL parameter fuzzing
+    - Historical URL analysis
+    - Pattern matching for redirect parameters
+    
+    Args:
+        target (str): The target domain
+        subdomains_file (str): Path to discovered subdomains
+    """
+    print_section_header("Open Redirect Vulnerability Detection")
+    
+    print(f"[{INF}] Open redirects allow attackers to redirect users to malicious sites")
+    print(f"{PROGRESS} Testing {colored(target, 'cyan')} for redirect vulnerabilities\n")
+    sleep(2)
+    
+    # URL collection from multiple sources
+    print(colored("→ Phase 1: URL Collection", "yellow"))
+    print(f"{PROGRESS} Gathering URLs from Wayback Machine and crawlers...\n")
+    
+    gau_out = REDIRECT_DIR / "gau_urls.txt"
+    katana_out = REDIRECT_DIR / "katana_urls.txt"
+    urlfinder_out = REDIRECT_DIR / "urlfinder_urls.txt"
+    hakrawler_out = REDIRECT_DIR / "hakrawler_urls.txt"
+    
+    command(
+        f"cat {subdomains_file} | gau --o {gau_out}",
+        'Fetching historical URLs from Wayback Machine and CommonCrawl'
+    )
+    
+    command(
+        f"cat {SUBDOMAINS_DIR / 'alive.txt'} | katana -d 2 -silent -o {katana_out}",
+        'Crawling live sites for URLs with redirect parameters'
+    )
+    
+    command(
+        f"cat {SUBDOMAINS_DIR / 'alive.txt'} | hakrawler -d 2 -silent > {hakrawler_out}",
+        'Using Hakrawler for additional URL discovery'
+    )
+    
+    # Combine all URLs
+    combined_urls = REDIRECT_DIR / "all_redirect_urls.txt"
+    command(
+        f"cat {gau_out} {katana_out} {hakrawler_out} | uro | sort -u > {combined_urls}",
+        'Normalizing and deduplicating all discovered URLs'
+    )
+    
+    url_count = get_line_count(str(combined_urls))
+    print(f"{OK} Total URLs collected: {url_count}\n")
+    
+    # Filter for redirect parameters
+    print(colored("→ Phase 2: Redirect Parameter Detection", "yellow"))
+    print(f"{PROGRESS} Filtering URLs with common redirect parameter names...\n")
+    
+    redirect_params_out = REDIRECT_DIR / "redirect_params.txt"
+    redirect_regex = "returnUrl=|continue=|dest=|destination=|forward=|go=|goto=|login\\?to=|next=|next_page=|out=|redir=|redirect=|redirect_to=|redirect_uri=|return=|returnTo=|return_url=|url=|qurl=|jump=|originUrl=|Url=|location=|ReturnUrl="
+    
+    command(
+        f"cat {combined_urls} | grep -Pi '{redirect_regex}' > {redirect_params_out}",
+        'Extracting URLs with potential redirect parameters'
+    )
+    
+    redirect_count = get_line_count(str(redirect_params_out))
+    print(f"{OK} URLs with redirect parameters: {redirect_count}\n")
+    
+    if redirect_count == 0:
+        print(f"{WARN} No redirect parameters found. Skipping payload injection.")
+        return
+    
+    # Test redirect parameters
+    print(colored("→ Phase 3: Payload Injection & Testing", "yellow"))
+    print(f"{PROGRESS} Injecting test payloads to detect open redirects...\n")
+    
+    # Method 1: Simple evil.com injection
+    test1_out = REDIRECT_DIR / "test_method1.txt"
+    command(
+        f"cat {redirect_params_out} | qsreplace 'https://evil.com' | httpx -silent -fr -mr 'evil.com' >> {test1_out}",
+        'Testing Method 1: Direct payload injection with httpx validation'
+    )
+    
+    # Method 2: Curl with redirect tracking
+    test2_out = REDIRECT_DIR / "test_method2.txt"
+    command(
+        r'cat ' + str(redirect_params_out) + r' | qsreplace "https://evil.com" | xargs -I {} curl -s -o /dev/null -w "%{url_effective} -> %{redirect_url}\n" {} >> ' + str(test2_out),
+        'Testing Method 2: Using curl to track redirect chains'
+    )
+    
+    # Method 3: Nuclei scanning
+    test3_out = REDIRECT_DIR / "nuclei_openredirect.txt"
+    command(
+        f"nuclei -l {SUBDOMAINS_DIR / 'alive.txt'} -t ~/nuclei-templates/http/vulnerabilities/open-redirect/ -silent -c 45 >> {test3_out}",
+        'Testing Method 3: Nuclei template-based detection'
+    )
+    
+    # Advanced testing with custom payloads
+    print(f"\n[{INF}] Advanced Payload Testing")
+    print(f"{PROGRESS} Using comprehensive payload list...\n")
+    
+    # Create sample payload file if it doesn't exist
+    payload_dir = Path("payloads")
+    payload_dir.mkdir(exist_ok=True)
+    payload_file = payload_dir / "openredirect.txt"
+    
+    if not payload_file.exists():
+        sample_payloads = [
+            "https://google.com",
+            "//google.com",
+            "https://evil.com",
+            "//evil.com/%2f..",
+            "javascript:alert(1)",
+            "/\\google.com",
+            "https:google.com",
+            "//google%E3%80%82com",
+            "/〱google.com",
+            "////google.com",
+        ]
+        with open(payload_file, 'w') as f:
+            f.write('\n'.join(sample_payloads))
+        print(f"{OK} Created sample payload file at {payload_file}")
+    
+    test4_out = REDIRECT_DIR / "test_advanced.txt"
+    if payload_file.exists():
+        command(
+            f'cat {redirect_params_out} | head -50 | while read url; do cat {payload_file} | while read payload; do echo "$url" | qsreplace "$payload"; done; done | httpx -silent -fr -mc 301,302 >> {test4_out}',
+            'Testing with advanced payload list (limited to first 50 URLs to prevent timeout)'
+        )
+    
+    # Results summary
+    print(f"\n{colored('='*70, 'green')}")
+    print(f"{OK} Open Redirect Testing Complete!")
+    print(f"{colored('='*70, 'green')}\n")
+    
+    print(f"[{INF}] Results Summary:")
+    print(f"    • Method 1 (httpx): {get_line_count(str(test1_out))} potential findings")
+    print(f"    • Method 2 (curl): {get_line_count(str(test2_out))} redirect chains")
+    print(f"    • Method 3 (Nuclei): {get_line_count(str(test3_out))} validated vulnerabilities")
+    print(f"    • Method 4 (Advanced): {get_line_count(str(test4_out))} additional findings")
+    print(f"\n{PROGRESS} All results saved to: {REDIRECT_DIR}\n")
+    
+    print(f"{WARN} Manual verification recommended for all findings")
+    print(f"{WARN} False positives are common - verify in browser\n")
+
+# ========================================================================
+# WAF Bypass & SQL Injection Module
+# ========================================================================
+
+def waf_bypass_and_sqli(target, subdomains_file):
+    """
+    Advanced WAF bypass techniques and SQL injection testing.
+    
+    This module demonstrates:
+    - ProxyChains setup for IP rotation
+    - SQLMap with tamper scripts
+    - Mass SQL injection hunting
+    
+    Args:
+        target (str): The target domain
+        subdomains_file (str): Path to discovered subdomains
+    """
+    print_section_header("WAF Bypass & SQL Injection Testing")
+    
+    print(f"[{INF}] Web Application Firewalls (WAFs) block malicious requests")
+    print(f"{PROGRESS} We'll use IP rotation and payload obfuscation to bypass them\n")
+    sleep(2)
+    
+    # ProxyChains setup guide
+    print(colored("→ ProxyChains Configuration", "yellow"))
+    print(f"\n{WARN} IMPORTANT: ProxyChains Setup Required\n")
+    print("ProxyChains routes your traffic through proxy servers to:")
+    print("  • Evade IP-based rate limiting")
+    print("  • Bypass geographic restrictions")
+    print("  • Avoid IP blacklisting")
+    print("\nSetup Instructions:")
+    print(f"{PROGRESS} 1. Edit configuration: sudo nano /etc/proxychains.conf")
+    print(f"{PROGRESS} 2. Comment out: #socks4 127.0.0.1 9050")
+    print(f"{PROGRESS} 3. Enable: random_chain (uncomment)")
+    print(f"{PROGRESS} 4. Add proxies (get free ones from https://www.sslproxies.org/):")
+    print("       http <ip> <port> <username> <password>")
+    print("       Example: http 192.168.1.1 8080")
+    print(f"{PROGRESS} 5. Optional: Enable quiet_mode to reduce logs\n")
+    
+    ready = input(f"[{INF}] Have you configured ProxyChains? (y/n): ").lower()
+    
+    if ready == 'y':
+        print(f"\n[{INF}] Testing ProxyChains configuration...")
+        print(colored("Testing IP rotation...", "yellow"))
+        
+        # Test ProxyChains
+        print(f"\n{PROGRESS} Test 1: Check current IP")
+        command("proxychains curl -s http://ipinfo.io/ip", "Fetching IP through ProxyChains")
+        
+        print(f"\n{PROGRESS} Test 2: Verify IP rotation")
+        command("proxychains curl -s http://ipinfo.io/ip", "Fetching IP again to verify rotation")
+        
+        print(f"\n{OK} If you see different IPs above, ProxyChains is working!\n")
+        sleep(2)
+    else:
+        print(f"{WARN} ProxyChains not configured. Continuing without IP rotation...")
+        print(f"{WARN} WAF bypass effectiveness will be limited\n")
+        sleep(2)
+    
+    # SQLMap testing
+    print(colored("→ SQLMap with WAF Bypass", "yellow"))
+    print(f"\n[{INF}] SQLMap is an automated SQL injection tool")
+    print(f"{PROGRESS} We'll combine it with ProxyChains and tamper scripts\n")
+    
+    sqlmap_target = input(f"[{INF}] Enter URL for SQLMap testing (or press Enter to skip): ").strip()
+    
+    if sqlmap_target:
+        print(f"\n[{INF}] Launching SQLMap with bypass techniques...")
+        print(f"{WARN} This may take 10-30 minutes depending on the target\n")
+        
+        sqlmap_out = SQLI_DIR / "sqlmap_results.txt"
+        sqlmap_cmd = f"sqlmap -u '{sqlmap_target}' --dbs --batch --random-agent --tamper=between,space2comment --level=5 --risk=3 --threads=10 2>&1 | tee {sqlmap_out}"
+        
+        if ready == 'y':
+            sqlmap_cmd = "proxychains " + sqlmap_cmd
+            print(f"{PROGRESS} Using ProxyChains for IP rotation")
+        
+        print(f"\n{PROGRESS} Command breakdown:")
+        print("  --dbs: Enumerate databases")
+        print("  --batch: Non-interactive mode")
+        print("  --random-agent: Rotate User-Agent headers")
+        print("  --tamper=between,space2comment: Obfuscate payloads")
+        print("  --level=5 --risk=3: Maximum testing depth")
+        print("  --threads=10: Concurrent requests\n")
+        
+        command(sqlmap_cmd, "Running SQLMap with WAF bypass techniques")
+        print(f"\n{OK} SQLMap results saved to: {sqlmap_out}\n")
+    
+    # Mass SQL injection hunting
+    print_section_header("Mass SQL Injection Discovery")
+    print(f"{PROGRESS} Scaling SQLi detection across all discovered subdomains...\n")
+    
+    # Extract unique domains
+    print(f"[{INF}] Step 1: Extracting unique domains...")
+    unique_domains = SQLI_DIR / "unique_domains.txt"
+    command(
+        f"cat {SUBDOMAINS_DIR / 'alive.txt'} | awk -F/ '{{print $3}}' | sort -u > {unique_domains}",
+        "Extracting hostnames from live URLs"
+    )
+    domain_count = get_line_count(str(unique_domains))
+    print(f"{OK} Extracted {domain_count} unique domains\n")
+    
+    # Gather SQLi parameter URLs
+    print(f"[{INF}] Step 2: Collecting URLs with SQL parameters...")
+    sqli_urls_raw = SQLI_DIR / "sqli_urls_raw.txt"
+    command(
+        f"cat {unique_domains} | waybackurls | gf sqli | uro > {sqli_urls_raw}",
+        "Using waybackurls + GF patterns to find potential SQLi points"
+    )
+    raw_count = get_line_count(str(sqli_urls_raw))
+    print(f"{OK} Found {raw_count} URLs with SQL-like parameters\n")
+    
+    if raw_count == 0:
+        print(f"{WARN} No SQL parameter URLs found. Skipping SQLi testing.")
+        return
+    
+    # Deduplicate by domain
+    print(f"[{INF}] Step 3: Deduplicating URLs (one per domain)...")
+    sqli_urls_filtered = SQLI_DIR / "sqli_urls_filtered.txt"
+    command(
+        f"cat {sqli_urls_raw} | awk -F/ '{{if (!seen[$3]++) print}}' > {sqli_urls_filtered}",
+        "Keeping only one URL per unique domain to prevent redundant scanning"
+    )
+    filtered_count = get_line_count(str(sqli_urls_filtered))
+    print(f"{OK} Reduced to {filtered_count} unique targets\n")
+    
+    # Scan with Nuclei
+    print(f"[{INF}] Step 4: Scanning with Nuclei DAST templates...")
+    print(f"{PROGRESS} This actively tests for SQL injection vulnerabilities\n")
+    
+    nuclei_sqli_out = SQLI_DIR / "nuclei_sqli_findings.txt"
+    command(
+        f"nuclei -l {sqli_urls_filtered} -t ~/nuclei-templates/http/vulnerabilities/sqli/ -c 30 -silent >> {nuclei_sqli_out}",
+        "Running Nuclei SQL injection detection templates"
+    )
+    
+    findings = get_line_count(str(nuclei_sqli_out))
+    
+    print(f"\n{colored('='*70, 'green')}")
+    print(f"{OK} SQL Injection Testing Complete!")
+    print(f"{colored('='*70, 'green')}\n")
+    print(f"[{INF}] Findings Summary:")
+    print(f"    • URLs tested: {filtered_count}")
+    print(f"    • Vulnerabilities found: {colored(str(findings), 'red' if findings > 0 else 'green')}")
+    print(f"    • Results saved to: {SQLI_DIR}\n")
+    
+    if findings > 0:
+        print(f"{WARN} CRITICAL: SQL injection vulnerabilities detected!")
+        print(f"{WARN} Review {nuclei_sqli_out} immediately\n")
+
+# ========================================================================
+# S3 Bucket Discovery Module
+# ========================================================================
+
+def s3_bucket_scanning(target, subdomains_file):
+    """
+    Discover and analyze AWS S3 bucket misconfigurations.
+    
+    Misconfigured S3 buckets can expose:
+    - Sensitive files and backups
+    - API keys and credentials
+    - Customer data
+    - Internal documentation
+    
+    Args:
+        target (str): The target domain
+        subdomains_file (str): Path to discovered subdomains
+    """
+    print_section_header("AWS S3 Bucket Discovery & Analysis")
+    
+    print(f"[{INF}] Searching for exposed Amazon S3 buckets associated with {colored(target, 'cyan')}")
+    print(f"{PROGRESS} S3 misconfigurations are a common source of data breaches\n")
+    sleep(2)
+    
+    # Direct S3 detection
+    print(colored("→ Method 1: Direct S3 Detection", "yellow"))
+    s3_direct_out = S3_DIR / "s3_direct_findings.txt"
+    
+    command(
+        f"subfinder -d {target} -all -silent | httpx -silent -sc -title -td | grep -i 's3\\|amazon' >> {s3_direct_out}",
+        "Scanning subdomains for direct S3 service indicators"
+    )
+    
+    command(
+        f"nuclei -l {subdomains_file} -t ~/nuclei-templates/http/technologies/s3-detect.yaml -silent >> {s3_direct_out}",
+        "Using Nuclei to detect S3 bucket patterns"
+    )
+    
+    direct_findings = get_line_count(str(s3_direct_out))
+    print(f"{OK} Direct S3 detections: {direct_findings}\n")
+    
+    # JavaScript file analysis
+    print(colored("→ Method 2: JavaScript File Analysis", "yellow"))
+    print(f"{PROGRESS} Extracting S3 URLs from JavaScript files...\n")
+    
+    alljs_file = S3_DIR / "all_javascript.txt"
+    
+    # Collect JS files
+    command(
+        f"katana -u {target} -d 5 -jc -silent | grep '\\.js > {alljs_file}",
+        "Crawling for JavaScript files (depth=5)"
+    )
+    
+    command(
+        f"echo {target} | gau | grep '\\.js | anew {alljs_file}",
+        "Adding historical JS files from Wayback Machine"
+    )
+    
+    # Check JS files are alive
+    js_alive = S3_DIR / "js_alive.txt"
+    command(
+        f"cat {alljs_file} | uro | sort -u | httpx -silent -mc 200 -o {js_alive}",
+        "Verifying which JS files are accessible"
+    )
+    
+    js_count = get_line_count(str(js_alive))
+    print(f"{OK} Live JavaScript files: {js_count}\n")
+    
+    # Extract S3 URLs from JS
+    s3_from_js = S3_DIR / "s3_urls_from_js.txt"
+    if js_count > 0:
+        command(
+            f'cat {js_alive} | xargs -I {{}} curl -s {{}} | grep -oE "(https?://[^/]*\\.s3[^/]*\\.amazonaws\\.com[^\\s\\"\\'<>]*)" | sort -u >> {s3_from_js}',
+            "Extracting S3 bucket URLs from JavaScript content"
+        )
+        
+        js_s3_count = get_line_count(str(s3_from_js))
+        print(f"{OK} S3 URLs found in JavaScript: {js_s3_count}\n")
+    
+    # Google dorking guide
+    print(colored("→ Method 3: Manual Google Dorking", "yellow"))
+    print(f"\n{WARN} Perform these Google searches manually:\n")
+    
+    google_dorks = [
+        f'site:s3.amazonaws.com "{target}"',
+        f'site:*.s3.amazonaws.com "{target}"',
+        f'(site:*.s3.amazonaws.com OR site:*.s3-external-1.amazonaws.com) "{target}"',
+        f'inurl:s3.amazonaws.com intitle:index.of.bucket "{target}"'
+    ]
+    
+    dorks_file = S3_DIR / "google_dorks.txt"
+    with open(dorks_file, 'w') as f:
+        f.write("Google Dorking Queries for S3 Bucket Discovery\n")
+        f.write("="*70 + "\n\n")
+        for i, dork in enumerate(google_dorks, 1):
+            print(f"  {i}. {colored(dork, 'cyan')}")
+            f.write(f"{i}. {dork}\n")
+    
+    print(f"\n{OK} Dorks saved to: {dorks_file}")
+    print(f"{PROGRESS} Look for 'Access Denied' (private) vs. file listings (exposed)\n")
+    
+    # Extract S3 bucket names
+    print(colored("→ Method 4: Bucket Name Extraction", "yellow"))
+    print(f"{PROGRESS} Compiling list of discovered S3 buckets...\n")
+    
+    s3_hostnames = S3_DIR / "s3_bucket_names.txt"
+    s3_full_urls = S3_DIR / "s3_full_urls.txt"
+    
+    # Combine all S3 findings
+    all_s3_sources = [s3_direct_out, s3_from_js]
+    combined_s3 = S3_DIR / "all_s3_references.txt"
+    
+    command(
+        f"cat {' '.join(str(f) for f in all_s3_sources if Path(f).exists())} | sort -u > {combined_s3}",
+        "Combining all S3 references from different sources"
+    )
+    
+    # Extract bucket hostnames
+    command(
+        f"cat {combined_s3} | grep -oP '([a-zA-Z0-9.-]*\\.s3[^/]*\\.amazonaws\\.com)' | sort -u > {s3_hostnames}",
+        "Extracting S3 bucket hostnames"
+    )
+    
+    # Extract full URLs
+    command(
+        f"cat {combined_s3} | grep -oP 'https?://[^\\s\"<>]*s3[^\\s\"<>]*amazonaws\\.com[^\\s\"<>]*' | sort -u > {s3_full_urls}",
+        "Extracting complete S3 URLs with paths"
+    )
+    
+    bucket_count = get_line_count(str(s3_hostnames))
+    url_count = get_line_count(str(s3_full_urls))
+    
+    print(f"{OK} Unique S3 buckets discovered: {bucket_count}")
+    print(f"{OK} Total S3 URLs (with paths): {url_count}\n")
+    
+    # Permission checking
+    if bucket_count > 0:
+        print(colored("→ Method 5: Permission Analysis", "yellow"))
+        print(f"{PROGRESS} Checking bucket permissions (requires AWS CLI)...\n")
+        
+        s3_permissions = S3_DIR / "s3_permissions.txt"
+        
+        # Check if AWS CLI is available
+        if shutil.which("aws"):
+            print(f"[{INF}] Testing bucket access permissions...")
+            command(
+                f"cat {s3_hostnames} | while read bucket; do echo \"Testing: $bucket\"; aws s3 ls s3://$bucket --no-sign-request 2>&1; done >> {s3_permissions}",
+                "Attempting anonymous access to discovered buckets"
+            )
+            print(f"{OK} Permission check complete. Review {s3_permissions}\n")
+        else:
+            print(f"{WARN} AWS CLI not installed. Skipping permission checks.")
+            print(f"{WARN} Install with: pip install awscli\n")
+    
+    # Results summary
+    print(f"\n{colored('='*70, 'green')}")
+    print(f"{OK} S3 Bucket Scanning Complete!")
+    print(f"{colored('='*70, 'green')}\n")
+    print(f"[{INF}] Discovery Summary:")
+    print(f"    • Direct detections: {direct_findings}")
+    print(f"    • Buckets from JS files: {js_s3_count if js_count > 0 else 0}")
+    print(f"    • Total unique buckets: {bucket_count}")
+    print(f"    • All results saved to: {S3_DIR}\n")
+    
+    if bucket_count > 0:
+        print(f"{WARN} Next Steps:")
+        print(f"    1. Review {s3_hostnames} for bucket names")
+        print(f"    2. Check {s3_permissions} for access levels")
+        print(f"    3. Test buckets manually: aws s3 ls s3://bucket-name")
+        print(f"    4. Look for sensitive files: backups, configs, credentials\n")
+
+# ========================================================================
+# GitHub Secrets Module
+# ========================================================================
+
+def github_secret_scanning(target):
+    """
+    Discover leaked credentials and secrets in GitHub repositories.
+    
+    Developers often accidentally commit:
+    - API keys and tokens
+    - Database credentials
+    - AWS access keys
+    - Private keys and certificates
+    
+    Args:
+        target (str): The target domain or organization
+    """
+    print_section_header("GitHub Secret & Credential Discovery")
+    
+    print(f"[{INF}] Searching for exposed secrets related to {colored(target, 'cyan')}")
+    print(f"{PROGRESS} Public GitHub repositories are a goldmine for credentials\n")
+    sleep(2)
+    
+    # Generate GitHub dorks
+    print(colored("→ GitHub Dorking Queries", "yellow"))
+    print(f"\n{WARN} Perform these searches on GitHub.com manually:\n")
+    
+    github_dorks = {
+        "Passwords": f'"{target}" password',
+        "API Keys (JSON)": f'"{target}" password extension:json',
+        "Environment Files": f'org:{target} path:.env',
+        "AWS Credentials": f'org:{target} "aws_access_key_id" OR "aws_secret_access_key"',
+        "Generic Secrets": f'org:{target} "api_key" OR "secret_key" OR "client_secret"',
+        "Database Credentials": f'"{target}" "database" "password" extension:yml',
+        "Private Keys": f'org:{target} "BEGIN RSA PRIVATE KEY" OR "BEGIN PRIVATE KEY"',
+        "Tokens": f'"{target}" "token" extension:txt',
+        "Configuration Files": f'org:{target} filename:config.json OR filename:settings.json'
+    }
+    
+    dorks_file = GITHUB_DIR / "github_dorks.txt"
+    with open(dorks_file, 'w') as f:
+        f.write(f"GitHub Dorking Queries for {target}\n")
+        f.write("="*70 + "\n\n")
+        f.write("How to use these dorks:\n")
+        f.write("1. Copy each query below\n")
+        f.write("2. Paste into GitHub search bar (github.com/search)\n")
+        f.write("3. Review code results for exposed credentials\n")
+        f.write("4. Check commit history for removed secrets\n\n")
+        f.write("="*70 + "\n\n")
+        
+        for category, dork in github_dorks.items():
+            print(f"  • {colored(category, 'yellow')}: {colored(dork, 'cyan')}")
+            f.write(f"{category}:\n{dork}\n\n")
+    
+    print(f"\n{OK} All GitHub dorks saved to: {dorks_file}\n")
+    
+    # Trufflehog integration
+    print(colored("→ Automated Secret Scanning with Trufflehog", "yellow"))
+    print(f"\n[{INF}] Trufflehog scans git repositories for high-entropy strings and secrets")
+    print(f"{PROGRESS} This can find credentials that were committed and later removed\n")
+    
+    if not shutil.which("trufflehog"):
+        print(f"{WARN} Trufflehog is not installed")
+        print(f"{PROGRESS} Install with: pip install trufflehog OR use Docker")
+        print(f"{PROGRESS} Docker: docker run -it trufflesecurity/trufflehog:latest --help\n")
+        
+        install_tf = input(f"[{INF}] Try to install trufflehog via pip? (y/n): ").lower()
+        if install_tf == 'y':
+            command("pip3 install trufflehog", "Installing Trufflehog")
+    
+    if shutil.which("trufflehog"):
+        org_name = input(f"[{INF}] Enter GitHub organization name (or press Enter to skip): ").strip()
+        
+        if org_name:
+            print(f"\n{WARN} This scan may take 10-60 minutes depending on repository size")
+            print(f"{PROGRESS} Scanning all repositories in organization: {org_name}\n")
+            
+            trufflehog_out = GITHUB_DIR / f"trufflehog_{org_name}.json"
+            trufflehog_summary = GITHUB_DIR / f"trufflehog_{org_name}_summary.txt"
+            
+            command(
+                f"trufflehog github --org={org_name} --json > {trufflehog_out} 2>&1",
+                f"Scanning {org_name} organization for secrets"
+            )
+            
+            # Parse results
+            if file_exists_and_not_empty(str(trufflehog_out)):
+                print(f"\n[{INF}] Parsing Trufflehog results...")
+                
+                try:
+                    with open(trufflehog_out, 'r') as f:
+                        findings = [json.loads(line) for line in f if line.strip()]
+                    
+                    # Summarize findings
+                    secret_types = {}
+                    for finding in findings:
+                        detector = finding.get('DetectorName', 'Unknown')
+                        secret_types[detector] = secret_types.get(detector, 0) + 1
+                    
+                    with open(trufflehog_summary, 'w') as f:
+                        f.write(f"Trufflehog Scan Summary for {org_name}\n")
+                        f.write("="*70 + "\n\n")
+                        f.write(f"Total Secrets Found: {len(findings)}\n\n")
+                        f.write("Breakdown by Type:\n")
+                        for secret_type, count in sorted(secret_types.items(), key=lambda x: x[1], reverse=True):
+                            f.write(f"  • {secret_type}: {count}\n")
+                    
+                    print(f"{OK} Found {colored(str(len(findings)), 'red' if len(findings) > 0 else 'green')} potential secrets")
+                    print(f"{OK} Summary saved to: {trufflehog_summary}\n")
+                    
+                    if len(findings) > 0:
+                        print(f"{WARN} CRITICAL: Secrets detected in GitHub repositories!")
+                        print(f"{WARN} These credentials should be rotated immediately\n")
+                
+                except Exception as e:
+                    print(f"{WARN} Could not parse Trufflehog output: {str(e)}\n")
+    
+    # Additional recommendations
+    print(f"\n{colored('='*70, 'green')}")
+    print(f"{OK} GitHub Secret Scanning Complete!")
+    print(f"{colored('='*70, 'green')}\n")
+    print(f"[{INF}] Additional Recommendations:\n")
+    print(f"  1. Check commit history for deleted secrets")
+    print(f"  2. Search for organization members' personal repos")
+    print(f"  3. Look for forked repositories with secrets")
+    print(f"  4. Monitor GitHub for new commits with credentials")
+    print(f"  5. Use GitHub's secret scanning alerts (if you own the org)\n")
+    print(f"{PROGRESS} All results saved to: {GITHUB_DIR}\n")
+
+# ========================================================================
+# Main Execution Flow
+# ========================================================================
+
+def setup_gf_patterns():
+    """Setup GF (grep patterns) for parameter discovery"""
+    gf_dir = Path.home() / ".gf"
+    gf_dir.mkdir(exist_ok=True)
+    
+    # Check if GF patterns exist locally
+    if Path("GFPattern").exists():
+        command(
+            f"cp GFPattern/* {gf_dir}/",
+            "Copying GF patterns for URL parameter filtering"
+        )
+        print(f"{OK} GF patterns configured\n")
+    else:
+        print(f"{WARN} GFPattern directory not found. You may need to clone:")
+        print(f"        git clone https://github.com/1ndianl33t/Gf-Patterns GFPattern\n")
+
+def generate_final_report(target):
+    """Generate a comprehensive summary report"""
+    report_file = OUTPUT_DIR / f"REPORT_{target.replace('.', '_')}.txt"
+    
+    with open(report_file, 'w') as f:
+        f.write(f"DataDive Security Assessment Report\n")
+        f.write(f"="*70 + "\n\n")
+        f.write(f"Target: {target}\n")
+        f.write(f"Scan Date: {tm.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"DataDive Version: {CURRENT_VERSION}\n\n")
+        f.write(f"="*70 + "\n\n")
+        
+        # Subdomain Summary
+        f.write("1. SUBDOMAIN ENUMERATION\n")
+        f.write("-" * 70 + "\n")
+        if (SUBDOMAINS_DIR / "all_subdomains.txt").exists():
+            total_subs = get_line_count(str(SUBDOMAINS_DIR / "all_subdomains.txt"))
+            alive_subs = get_line_count(str(SUBDOMAINS_DIR / "alive.txt"))
+            f.write(f"Total Subdomains: {total_subs}\n")
+            f.write(f"Live Subdomains: {alive_subs}\n")
+            f.write(f"Coverage: {(alive_subs/total_subs*100 if total_subs > 0 else 0):.1f}%\n\n")
+        
+        # Open Redirect Summary
+        f.write("2. OPEN REDIRECT VULNERABILITIES\n")
+        f.write("-" * 70 + "\n")
+        redirect_findings = 0
+        for test_file in REDIRECT_DIR.glob("test_*.txt"):
+            redirect_findings += get_line_count(str(test_file))
+        f.write(f"Potential Findings: {redirect_findings}\n")
+        f.write(f"Status: {'CRITICAL' if redirect_findings > 0 else 'CLEAR'}\n\n")
+        
+        # SQLi Summary
+        f.write("3. SQL INJECTION TESTING\n")
+        f.write("-" * 70 + "\n")
+        if (SQLI_DIR / "nuclei_sqli_findings.txt").exists():
+            sqli_findings = get_line_count(str(SQLI_DIR / "nuclei_sqli_findings.txt"))
+            f.write(f"Vulnerabilities Found: {sqli_findings}\n")
+            f.write(f"Status: {'CRITICAL' if sqli_findings > 0 else 'CLEAR'}\n\n")
+        
+        # S3 Summary
+        f.write("4. S3 BUCKET EXPOSURE\n")
+        f.write("-" * 70 + "\n")
+        if (S3_DIR / "s3_bucket_names.txt").exists():
+            s3_buckets = get_line_count(str(S3_DIR / "s3_bucket_names.txt"))
+            f.write(f"Buckets Discovered: {s3_buckets}\n")
+            f.write(f"Status: {'REVIEW REQUIRED' if s3_buckets > 0 else 'NONE FOUND'}\n\n")
+        
+        f.write("="*70 + "\n")
+        f.write(f"Full results available in: {OUTPUT_DIR.absolute()}\n")
+    
+    print(f"{OK} Comprehensive report generated: {report_file}\n")
 
 def main():
-
-    # Making sure that environment paths are setup correctly
-    # os.environ("") # This line is incomplete, assuming it's for GOPATH setup
-    # If you intend to set GOPATH, please provide the correct path, e.g.:
-    # os.environ["GOPATH"] = os.path.expanduser("~/go")
-    command("mkdir -p ~/.gf", "Creating .gf directory for GF patterns if it doesn't exist.")
-    command("cp GFPattern/* ~/.gf", "Copying GF patterns to the .gf directory.")
-
-    # ========================================================================
-    # Section: Subdomain Enumeration
-    # Tags: #Subdomain_Enumeration #Reconnaissance
-    # ========================================================================
-    print(f'\n\n{"="*70}')
-    print(f'[{INF}] Starting Subdomain Enumeration')
-    print(f'{"="*70}\n')
-    sleep(2.5)
-
-    subenumweb = input("What is the website you want to scan for subdomains?: ")
-
-    print(colored("Running Subfinder", "yellow"))
-    print("")
-    sleep(2.5)
-    command(f'subfinder -d {subenumweb} -all >> subfinder.txt',
-            f'Using Subfinder to discover subdomains for {subenumweb}. '
-            'The `-d` flag specifies the domain, `-all` uses all available sources, '
-            'and `>>` appends output to `subfinder.txt`.')
-    print("")
-
-    print(colored("Running Assetfinder", "yellow"))
-    sleep(2.5)
-    print("")
-    command(f'assetfinder --subs-only {subenumweb} >> assetfinder.txt',
-            f'Running Assetfinder to find related subdomains for {subenumweb}. '
-            'The `--subs-only` flag restricts output to only subdomains.')
-    print("")
-
-    print(colored("Running Amass", "yellow"))
-    sleep(2.5)
-    print("")
-    command(f'amass enum -timeout 30 -norecursive -d {subenumweb} >> amass.txt',
-            f'Performing Amass enumeration for {subenumweb}. '
-            'Amass is a powerful reconnaissance tool. '
-            '`-timeout 30` sets a 30-second timeout, `-norecursive` prevents recursive subdomain search, '
-            'and `-d` specifies the target domain.')
-    print("")
-
-    print(f"[{INF}] Combining results into subdomains.txt")
-    print("")
-    command("sort -u subfinder.txt assetfinder.txt amass.txt > subdomains.txt",
-            'Merging and de-duplicating subdomains from `subfinder.txt`, `assetfinder.txt`, '
-            'and `amass.txt` into `subdomains.txt`. `sort -u` sorts and removes duplicates.')
-    line_count = get_line_count('subdomains.txt')
-    print(f"[{INF}] Total found subdomains: {line_count}")
-    print("")
-
-    print(colored("Running httpx to find alive subdomains", "yellow"))
-    print("")
-    sleep(2)
-    if line_count >= 500:
-        command("httpx -l subdomains.txt -o alive.txt -t 50",
-                'Probing subdomains from `subdomains.txt` with httpx to check for live hosts. '
-                '`-l` specifies the input file, `-o` for output, and `-t 50` sets 50 concurrent threads '
-                'for faster scanning (used for larger lists).')
-    else:
-        command("httpx -l subdomains.txt -o alive.txt",
-                'Probing subdomains from `subdomains.txt` with httpx to check for live hosts. '
-                '`-l` specifies the input file, `-o` for output. Default threads are used for smaller lists.')
-    print("")
-
-    print(f"[{INF}] Checking status codes with httpx")
-    print("")
-    command('httpx -l subdomains.txt -sc >> status_codes.txt',
-            'Scanning all subdomains in `subdomains.txt` with httpx to retrieve HTTP status codes. '
-            '`-sc` displays the status code, and `>>` appends to `status_codes.txt`.')
-    print("")
-
-    print(f"[{INF}] Filtering 200 OK responses")
-    print("")
-    command("cat status_codes.txt | grep '200' >> 200.txt",
-            'Extracting only the lines with a "200 OK" status code from `status_codes.txt` '
-            'and saving them to `200.txt`.')
-    print("")
-
-    print(f"[{INF}] Running Subjack and Nuclei for subdomain takeover checks")
-    print("")
-    command("subjack -w subdomains.txt -t 100 -ssl -v -o subjack.txt",
-            'Running Subjack to check for potential subdomain takeovers. '
-            '`-w` specifies the wordlist (subdomains), `-t 100` sets 100 threads, '
-            '`-ssl` enables SSL/TLS checks, `-v` for verbose output, and `-o` for output file.')
-    command("nuclei -l subdomains.txt -t ~/nuclei-templates/takeovers/detect-all-takeovers.yaml >> nuclei-subdomaintakeovers.txt",
-            'Using Nuclei with a specific template to detect various subdomain takeover vulnerabilities '
-            'on the discovered subdomains. `-l` for list, `-t` for template.')
-    print("")
-
-    print(f"[{INF}] Running Katana for JS and deep scan")
-    print("")
-    command("katana -u alive.txt -jc -o katana-JS.txt",
-            'Running Katana, a web crawler, on `alive.txt` to discover JavaScript files. '
-            '`-u` specifies the input URLs, `-jc` extracts JavaScript files, and `-o` saves the output.')
-    command("katana -u alive.txt -d 5 -ef woff,css,png,svg,jpg,woff2,jpeg,gif -o Katana-DeepScan-allurls.txt",
-            'Performing a deeper crawl with Katana on `alive.txt`. '
-            '`-d 5` sets the recursion depth to 5, and `-ef` excludes common file extensions '
-            'to focus on more interesting content.')
-    print("")
-
-    # ========================================================================
-    # Section: Open Redirect Testing
-    # Tags: #Open_Redirect #Vulnerability_Scanning
-    # ========================================================================
-    print(f'\n\n{"="*70}')
-    print(f'[{INF}] Starting Open Redirect Testing')
-    print(f'{"="*70}\n')
-    sleep(2.5)
-
-    print(f'[{INF}] We\'re going to run Gau + Nuclei to find OpenRedirects')
-    print("")
-
-    print(colored("Running Gau", "yellow"))
-    command("cat subdomains.txt | gau --o Gau-OpenRedirect.txt",
-            'Using Gau (Get All URLs) to fetch URLs from the Wayback Machine '
-            'and other sources for each subdomain in `subdomains.txt`. '
-            'Output is saved to `Gau-OpenRedirect.txt`.')
-    command("cat Gau-OpenRedirect.txt | gf redirect | uro | qsreplace 'https://evil.com' | httpx -silent -fr -mr 'evil.com'",
-            'Piping URLs from `Gau-OpenRedirect.txt` to `gf redirect` (a GF pattern for redirect parameters). '
-            'Then, `uro` normalizes URLs, `qsreplace` injects `https://evil.com` into query parameters, '
-            'and `httpx` silently checks for responses containing `evil.com`, indicating a potential open redirect.')
-    print("")
-
-    print(colored("Running Nuclei (Open Redirect)", "yellow"))
-    print("")
-    command("cat alive.txt | nuclei -t ~/nuclei-templates/http/open-redirect/open-redirect.yaml -c 45",
-            'Scanning all alive subdomains with Nuclei using a specific template '
-            'designed to identify open redirect vulnerabilities. '
-            '`-c 45` sets 45 concurrent requests.')
-    print("")
-
-    print(f"{INF} Time to use ffuf to replace a redirect query like: returnUrl=, continue=  with an open redirect payload")
-    print("")
-    print(colored("We will use Gau + Katana + Urlfinder + hakrawler to find as much redirect querys as possible", "yellow"))
-    command("cat alive.txt | katana -d 2 -o katana-redirect.txt",
-            'Crawling `alive.txt` with Katana (depth 2) to find more URLs, including those with potential redirect parameters.')
-    command("cat alive.txt | urlfinder -o urlfinder-redirect.txt",
-            'Using urlfinder to extract URLs from `alive.txt`, which may contain redirect parameters.')
-    command("cat alive.txt | hakrawler > hakrawler-redirect.txt",
-            'Crawling `alive.txt` with hakrawler to discover URLs, including those with redirect parameters.')
-    command("cat katana-redirect.txt urlfinder-redirect.txt hakrawler-redirect.txt Gau-OpenRedirect.txt | uro | sort -u  | tee final-redirect.txt",
-            'Combining URLs from Katana, Urlfinder, Hakrawler, and Gau, then normalizing, '
-            'de-duplicating, and saving them to `final-redirect.txt`. `tee` also prints to console.')
-
-    open_redirect_regex = "returnUrl=|continue=|dest=|destination=|forward=|go=|goto=|login\\?to=|login_url=|logout=|next=|next_page=|out=|g=|redir=|redirect=|redirect_to=|redirect_uri=|redirect_url=|return=|returnTo=|return_path=|return_to=|return_url=|rurl=|site=|target=|to=|uri=|url=|qurl=|rit_url=|jump=|jump_url=|originUrl=|origin=|Url=|desturl=|u=|Redirect=|location=|ReturnUrl=|redirect_url=|redirect_to=|forward_to=|forward_url=|destination_url=|jump_to=|go_to=|goto_url=|target_url=|redirect_link="
-    command(f"cat final-redirect.txt | grep -Pi '{open_redirect_regex}' | tee redirect_params.txt",
-            'Filtering `final-redirect.txt` to find URLs containing common open redirect parameter names '
-            'using a case-insensitive regex. Results are saved to `redirect_params.txt` and printed.')
-    command("cat redirect_params.txt | qsreplace 'https://evil.com' | httpx -silent -fr -mr 'evil.com' >> openredirect-test-1.txt ",
-            'Injecting `https://evil.com` into parameters of URLs from `redirect_params.txt` '
-            'and using `httpx` to check if `evil.com` is reflected in the final redirected URL.')
-    command(r'cat redirect_params.txt | qsreplace "https://evil.com" | xargs -I {} curl -s -o /dev/null -w "%{url_effective} -> %{redirect_url}\n" {} >> openredirect-test-2.txt',
-            'Similar to the previous command, but uses `curl` to explicitly follow redirects and '
-            'print the effective URL and redirect URL to `openredirect-test-2.txt`. '
-            'This provides more detailed redirect information.')
-    command(f'subfinder -d {subenumweb} | httpx -silent | gau | gf redirect | uro | qsreplace "https://evil.com" | httpx -silent -fr -mr "evil.com" >> openredirect-test-3.txt',
-            'A combined pipeline: find subdomains, check if alive, fetch URLs with Gau, '
-            'filter for redirects with GF, normalize with uro, inject payload, and check for redirection.')
-
-    print(f'[{INF}] Using advanced payloads from payloads/openredirect.txt for open redirect testing.')
-    print(f'[{WARN}] Ensure you have created a file named `openredirect.txt` in a `payloads` directory and populated it with your desired open redirect payloads.')
-    command(f'cat Gau-OpenRedirect.txt | gf redirect | uro | while read url; do cat payloads/openredirect.txt | while read payload; do echo "$url" | qsreplace "$payload"; done; done | httpx -silent -fr -mr "google.com" >> openredirect-test-4.txt',
-            'Iterating through URLs from `Gau-OpenRedirect.txt` (filtered by `gf redirect` and normalized by `uro`). '
-            'For each URL, it tries every payload from `payloads/openredirect.txt`, '
-            'injects it with `qsreplace`, and checks if the redirection leads to `google.com` (as an example of a controlled external site).')
-
-    print(f'\n[{WARN}] For a tool with no false positives for open redirects, consider using **lox.sh**.')
-    print(f'        First, prepare the input file by running: cat Gau-OpenRedirect.txt | sed \'s/=.*/=/\' | uro > final_lox.txt')
-    print(f'        This command processes the Gau-OpenRedirect.txt file. `sed \'s/=.*/=/\'` removes everything after the first equals sign '
-            '(to standardize parameter names for lox.sh), and `uro` normalizes the URLs. The output is saved to `final_lox.txt`.')
-    print(f'        Then, run lox.sh manually with: ./lox.sh < final_lox.txt')
-    print(f'        This command feeds the prepared list of URLs into the `lox.sh` tool for open redirect validation.')
-    print("")
-
-    # ========================================================================
-    # Section: WAF Bypass Techniques (ProxyChains & SQLMap)
-    # Tags: #WAF_Bypass #SQL_Injection #ProxyChains #Security_Testing
-    # ========================================================================
-    print(f'\n\n{"="*70}')
-    print(f'[{INF}] Starting WAF Bypass Techniques')
-    print(f'{"="*70}\n')
-    sleep(2)
-
-    print(f'[{INF}] Method 1: Using Proxychains for WAF Bypass')
-    print(f'[{WARN}] ProxyChains routes traffic through multiple proxies to evade detection and rate limits.')
-    print(f'[{WARN}] Manual Setup Required:')
-    print(f'    1.  Open the ProxyChains configuration file:')
-    print(f'        sudo nano /etc/proxychains.conf')
-    print(f'    2.  Comment out the default Tor setting (127.0.0.1:9050) by adding a hash `#` at the beginning of the line.')
-    print(f'    3.  Add your residential proxies at the end of the file in the format:')
-    print(f'        http <ipaddress> <port> [username] [password]')
-    print(f'        (e.g., http 192.0.2.1 8080 or socks5 192.0.2.2 9050 user pass)')
-    print(f'        You can get free SSL proxies from: https://www.sslproxies.org/ or use paid residential proxies.')
-    print(f'    4.  Disable `dynamic_chain` and enable `random_chain` to improve reliability (ProxyChains will rotate proxies if one fails).')
-    print(f'        #dynamic_chain')
-    print(f'        random_chain')
-    print(f'    5.  Optionally, enable `quiet_mode` to suppress ProxyChains logs:')
-    print(f'        quiet_mode')
-    print(f'    6.  Save and exit the configuration file.')
+    """Main execution workflow"""
+    # Setup
+    print_banner()
+    create_output_directories()
     
-    input("Are you ready?: ")
-
-    print(f'\n[{INF}] Validating ProxyChains setup...')
-    print(f'[{WARN}] Run the following commands to confirm ProxyChains is working:')
+    # Dependency checks
+    print_section_header("Dependency Verification")
+    print(f"[{INF}] Checking required tools and dependencies...")
+    print(f"{PROGRESS} This ensures all reconnaissance tools are available\n")
+    
+    deps_ok = True
+    deps_ok = check_and_install_go() and deps_ok
+    deps_ok = check_and_install_aws() and deps_ok
+    deps_ok = check_uro() and deps_ok
+    deps_ok = check_jq() and deps_ok
+    
+    if not deps_ok:
+        print(f"\n{WARN} Some dependencies failed to install")
+        print(f"{WARN} Continuing anyway - some features may not work\n")
+        input(f"Press Enter to continue...")
+    
+    # Check Go tools
+    tool_status = check_go_tools()
+    missing_tools = [tool for tool, installed in tool_status.items() if not installed]
+    
+    if missing_tools:
+        print(f"\n{WARN} The following tools failed to install: {', '.join(missing_tools)}")
+        print(f"{WARN} Some modules may not function correctly\n")
+        cont = input(f"Continue anyway? (y/n): ").lower()
+        if cont != 'y':
+            print(f"{ERR} Exiting. Please install missing tools manually.")
+            sys.exit(1)
+    
+    # Setup GF patterns
+    setup_gf_patterns()
+    
+    print(f"\n{OK} All systems ready!")
     sleep(2)
-    print(colored("Executing: proxychains curl http://ipinfo.io", "yellow"))
-    command("proxychains curl http://ipinfo.io",
-            'Using `proxychains` to route `curl` through the configured proxies to `http://ipinfo.io`. '
-            'This command helps verify if ProxyChains is active and changing your apparent IP address.')
-    sleep(1)
-    print(colored("Executing: proxychains curl http://ipinfo.io/ip", "yellow"))
-    command("proxychains curl http://ipinfo.io/ip",
-            'Similar to the previous command, this specifically fetches only the IP address '
-            'to quickly confirm if the IP is being rotated by ProxyChains.')
-    print(f'[{OK}] If you see different IP addresses with each request, ProxyChains is routing traffic correctly.')
-    print(f'[{WARN}] You can also verify by running `proxychains firefox` and checking your IP in the browser.')
-    sleep(3)
-
-    print(f'\n[{INF}] Using SQLMap with ProxyChains and Tamper Scripts')
-    print(f'[{WARN}] This method combines IP rotation with payload obfuscation to bypass WAFs.')
-    sqlmap_target_url = input(f"[{INF}] Enter the specific URL for SQLMap testing (e.g., http://example.com/vulnerable?id=1): ")
-    if sqlmap_target_url:
-        print(f'[{INF}] Executing SQLMap with ProxyChains and tamper scripts. This may take some time.')
-        print(f'        Command: proxychains sqlmap -u \'{sqlmap_target_url}\' --dbs --batch -p id --random-agent --tamper=between,space2comment --dbms mysql --tech=B --no-cast --flush-session --threads 10')
-        sleep(2)
-        command(f'proxychains sqlmap -u \'{sqlmap_target_url}\' --dbs --batch -p id --random-agent --tamper=between,space2comment --dbms mysql --tech=B --no-cast --flush-session --threads 10',
-                'Running SQLMap with ProxyChains for WAF bypass. '
-                '`-u` specifies the target URL. `--dbs` enumerates databases. '
-                '`--batch` runs in non-interactive mode. `-p id` targets the "id" parameter. '
-                '`--random-agent` uses a random User-Agent. '
-                '`--tamper=between,space2comment` uses tamper scripts to obfuscate payloads. '
-                '`--dbms mysql` specifies the database management system. '
-                '`--tech=B` uses boolean-based blind SQLi. `--no-cast` avoids casting. '
-                '`--flush-session` clears the session. `--threads 10` sets 10 concurrent threads.')
-        print(f'[{OK}] SQLMap execution completed. Review the output for bypassed WAFs and dumped databases.')
+    
+    # Get target from user
+    print_section_header("Target Configuration")
+    target = input(f"[{INF}] Enter the target domain (e.g., example.com): ").strip()
+    
+    if not target:
+        print(f"{ERR} No target specified. Exiting.")
+        sys.exit(1)
+    
+    # Validate domain format
+    if target.startswith("http://") or target.startswith("https://"):
+        target = target.split("://")[1].split("/")[0]
+        print(f"{WARN} Cleaned target domain: {target}")
+    
+    print(f"\n{OK} Target set to: {colored(target, 'cyan', attrs=['bold'])}")
+    print(f"{PROGRESS} All results will be saved to: {OUTPUT_DIR.absolute()}\n")
+    
+    # Module selection
+    print(f"[{INF}] Select modules to run:\n")
+    print(f"  1. Full Scan (All modules)")
+    print(f"  2. Subdomain Enumeration Only")
+    print(f"  3. Open Redirect Testing Only")
+    print(f"  4. SQL Injection Testing Only")
+    print(f"  5. S3 Bucket Discovery Only")
+    print(f"  6. GitHub Secret Scanning Only")
+    print(f"  7. Custom Selection\n")
+    
+    choice = input(f"[{INF}] Enter your choice (1-7): ").strip()
+    
+    modules = {
+        'subdomain': False,
+        'openredirect': False,
+        'sqli': False,
+        's3': False,
+        'github': False
+    }
+    
+    if choice == '1':
+        modules = {k: True for k in modules}
+        print(f"{OK} Running full scan on {target}\n")
+    elif choice == '2':
+        modules['subdomain'] = True
+    elif choice == '3':
+        modules['subdomain'] = True  # Required for open redirect
+        modules['openredirect'] = True
+    elif choice == '4':
+        modules['subdomain'] = True  # Required for SQLi
+        modules['sqli'] = True
+    elif choice == '5':
+        modules['subdomain'] = True  # Required for S3
+        modules['s3'] = True
+    elif choice == '6':
+        modules['github'] = True
+    elif choice == '7':
+        print(f"\n[{INF}] Select modules to run (y/n for each):\n")
+        modules['subdomain'] = input("  Run Subdomain Enumeration? (y/n): ").lower() == 'y'
+        modules['openredirect'] = input("  Run Open Redirect Testing? (y/n): ").lower() == 'y'
+        modules['sqli'] = input("  Run SQL Injection Testing? (y/n): ").lower() == 'y'
+        modules['s3'] = input("  Run S3 Bucket Discovery? (y/n): ").lower() == 'y'
+        modules['github'] = input("  Run GitHub Secret Scanning? (y/n): ").lower() == 'y'
     else:
-        print(f'[{WARN}] No URL provided for SQLMap testing. Skipping this step.')
-    sleep(3)
-
-    print(f'\n[{INF}] Mass Hunting for SQL Injection Vulnerabilities')
-    print(f'[{WARN}] This section outlines steps to scale SQLi detection across multiple targets.')
+        print(f"{WARN} Invalid choice. Running full scan.")
+        modules = {k: True for k in modules}
+    
+    # Ensure dependencies
+    if modules['openredirect'] or modules['sqli'] or modules['s3']:
+        if not modules['subdomain']:
+            print(f"\n{WARN} Selected modules require subdomain enumeration")
+            modules['subdomain'] = True
+    
+    print(f"\n{OK} Scan configuration confirmed. Starting...\n")
     sleep(2)
+    
+    # Execute modules
+    start_time = tm.time()
+    subdomains_file = None
+    
+    try:
+        # Module 1: Subdomain Enumeration
+        if modules['subdomain']:
+            subdomains_file = subdomain_enumeration(target)
+        
+        # Module 2: Open Redirect Testing
+        if modules['openredirect']:
+            if subdomains_file:
+                open_redirect_testing(target, subdomains_file)
+            else:
+                print(f"{ERR} Skipping Open Redirect - no subdomains file")
+        
+        # Module 3: SQL Injection Testing
+        if modules['sqli']:
+            if subdomains_file:
+                waf_bypass_and_sqli(target, subdomains_file)
+            else:
+                print(f"{ERR} Skipping SQLi Testing - no subdomains file")
+        
+        # Module 4: S3 Bucket Discovery
+        if modules['s3']:
+            if subdomains_file:
+                s3_bucket_scanning(target, subdomains_file)
+            else:
+                print(f"{ERR} Skipping S3 Scanning - no subdomains file")
+        
+        # Module 5: GitHub Secret Scanning
+        if modules['github']:
+            github_secret_scanning(target)
+        
+        # Generate final report
+        generate_final_report(target)
+        
+    except KeyboardInterrupt:
+        print(f"\n\n{WARN} Scan interrupted by user")
+        print(f"{PROGRESS} Partial results saved to: {OUTPUT_DIR}\n")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{ERR} Unexpected error occurred: {str(e)}")
+        print(f"{PROGRESS} Partial results may be available in: {OUTPUT_DIR}\n")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    
+    # Completion
+    elapsed_time = tm.time() - start_time
+    hours, remainder = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    print(f"\n\n{'='*70}")
+    print(f"{colored('SCAN COMPLETE!', 'green', attrs=['bold'])}")
+    print(f"{'='*70}\n")
+    print(f"[{INF}] Scan Statistics:")
+    print(f"    • Target: {target}")
+    print(f"    • Duration: {int(hours)}h {int(minutes)}m {int(seconds)}s")
+    print(f"    • Results: {OUTPUT_DIR.absolute()}")
+    print(f"\n{OK} Review the generated report and individual module outputs")
+    print(f"{PROGRESS} Next steps:")
+    print(f"    1. Verify all findings manually")
+    print(f"    2. Prioritize critical vulnerabilities")
+    print(f"    3. Document and report responsibly")
+    print(f"    4. Follow coordinated disclosure practices\n")
+    print(f"{WARN} Remember: This tool is for authorized testing only!")
+    print(f"{WARN} Unauthorized access to systems is illegal.\n")
 
-    print(f'[{INF}] Step 1: Extracting unique domain names from `alive.txt` (or your initial URL list).')
-    print(f"        Command: cat alive.txt | awk -F/ '{{print $3}}' | sort -u > unique_domains_for_sqli.txt")
-    command("cat alive.txt | awk -F/ '{print $3}' | sort -u > unique_domains_for_sqli.txt",
-            'Extracting only the domain (hostname) from each URL in `alive.txt`, '
-            'then sorting and removing duplicates to create `unique_domains_for_sqli.txt`. '
-            '`awk -F/ \'{print $3}\'` extracts the third field separated by `/` (the hostname).')
-    line_count_domains = get_line_count('unique_domains_for_sqli.txt')
-    print(f'[{OK}] Extracted {line_count_domains} unique domains to unique_domains_for_sqli.txt')
-    sleep(2)
+def welcome():
+    """Entry point with initial checks"""
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n{WARN} Operation cancelled by user")
+        sys.exit(0)
 
-    print(f'[{INF}] Step 2: Using waybackurls, gf sqli, and uro to find SQLi parameter URLs from passive sources.')
-    print(f'        Command: cat unique_domains_for_sqli.txt | waybackurls | gf sqli | uro > sqli_urls_raw.txt')
-    command("cat unique_domains_for_sqli.txt | waybackurls | gf sqli | uro > sqli_urls_raw.txt",
-            'Piping unique domains to `waybackurls` to fetch historical URLs, '
-            'then `gf sqli` filters for URLs with common SQLi parameters, '
-            'and `uro` normalizes them. Results are saved to `sqli_urls_raw.txt`.')
-    line_count_sqli_raw = get_line_count('sqli_urls_raw.txt')
-    print(f'[{OK}] Found {line_count_sqli_raw} potential SQLi URLs to sqli_urls_raw.txt')
-    sleep(2)
-
-    print(f'[{INF}] Step 3: Reducing noise by getting only one SQL parameter URL per domain.')
-    print(f'        Command: cat sqli_urls_raw.txt | gawk -F/ \'{{host=$3; sub(/:80$/, "", host); if (!(host in seen)) {{ print $0; seen[host] }} }}\' > sqli_urls_filtered.txt')
-    command('cat sqli_urls_raw.txt | gawk -F/ \'{host=$3; sub(/:80$/, "", host); if (!(host in seen)) { print $0; seen[host] } }\' > sqli_urls_filtered.txt',
-            'Filtering `sqli_urls_raw.txt` to select only one URL per unique domain. '
-            'This prevents redundant scanning of multiple URLs on the same domain with Nuclei. '
-            '`gawk` is used for more advanced text processing, keeping track of seen hosts.')
-    line_count_sqli_filtered = get_line_count('sqli_urls_filtered.txt')
-    print(f'[{OK}] Filtered down to {line_count_sqli_filtered} unique SQLi URLs in sqli_urls_filtered.txt')
-    sleep(2)
-
-    print(f'[{INF}] Step 4: Scanning with Nuclei using the DAST SQLi template.')
-    print(f'        Command: nuclei -l sqli_urls_filtered.txt -t ~/nuclei-templates/dast/sql-injection.yaml -c 45')
-    print(f'[{WARN}] Ensure you have the nuclei-templates repository cloned (e.g., `git clone https://github.com/projectdiscovery/nuclei-templates ~/nuclei-templates`)')
-    command("nuclei -l sqli_urls_filtered.txt -t ~/nuclei-templates/dast/sql-injection.yaml -c 45 >> nuclei-sqli-results.txt",
-            'Running Nuclei to actively scan the filtered SQLi URLs for SQL Injection vulnerabilities '
-            'using the `dast/sql-injection.yaml` template. `-c 45` sets 45 concurrent requests. '
-            'Results are appended to `nuclei-sqli-results.txt`.')
-    print(f'[{OK}] Nuclei SQLi scan completed. Results saved to nuclei-sqli-results.txt.')
-    sleep(3)
-
-    print(f'\n{"="*70}')
-    print(f'[{OK}] WAF Bypass Techniques Section Completed.')
-    print(f'{"="*70}\n')
-    sleep(2)
-
-    # ========================================================================
-    # Section: S3 Bucket Scanning
-    # Tags: #S3_Bucket #Cloud_Security #Information_Disclosure
-    # ========================================================================
-    print(f'\n\n{"="*70}')
-    print(f'[{INF}] Starting S3 Bucket Scanning')
-    print(f'{"="*70}\n')
-    sleep(2.5)
-
-    print(f'[{INF}] We will use subfinder, nuclei, katana, and other methods. I also recommend **Github dorking** separately.')
-    print("")
-
-    # Initial S3 detection
-    print(f'[{INF}] Running Subfinder + Httpx for finding Amazon S3 Sites')
-    command(f'subfinder -d {subenumweb} -all -silent | httpx -sc -title -td | grep "Amazon S3" >> subfinder-s3-scanning.txt',
-            f'Discovering subdomains for {subenumweb} with Subfinder, then piping them to httpx '
-            'to check for live hosts and extract status codes, titles, and technology detections. '
-            'Finally, `grep "Amazon S3"` filters for responses indicating Amazon S3 services, '
-            'saving them to `subfinder-s3-scanning.txt`.')
-    print("")
-
-    print(f'[{INF}] Using Nuclei to find S3 sites')
-    command(f'subfinder -d {subenumweb} -all -silent | nuclei -t ~/nuclei-templates/s3/s3-detect.yaml',
-            f'Using Subfinder to get subdomains, then piping them to Nuclei to scan for '
-            'known S3 bucket misconfigurations and common S3 bucket patterns '
-            'using the `s3-detect.yaml` template.')
-    print("")
-
-    # JS file analysis for S3 URLs
-    print(f'[{INF}] Time to use Katana to download all of the JS files, then search for AWS S3 URLs in those files')
-    print("")
-    command(f"katana -u {subenumweb} -d 5 -jc | grep '\.js$' | tee alljs.txt",
-            f'Crawling {subenumweb} with Katana (depth 5) to find JavaScript files (`-jc`), '
-            'filtering for `.js` extensions, and saving them to `alljs.txt` and printing to console.')
-    command(f'echo {subenumweb} | gau | grep "\.js$" | anew alljs.txt',
-            f'Fetching URLs for {subenumweb} using Gau, filtering for `.js` files, '
-            'and adding new unique JS URLs to `alljs.txt` using `anew`.')
-    command(f'cat alljs.txt | uro | sort -u | httpx -mc -o {subenumweb}.txt',
-            'Normalizing, de-duplicating, and then checking the status of JavaScript URLs '
-            'from `alljs.txt` with `httpx`. `-mc` shows status codes. The output is saved to a file named after the target.')
-    command(f'cat {subenumweb}.txt | jsleak -s -l -k',
-            f'Running `jsleak` on the previously collected JavaScript files (from {subenumweb}.txt) '
-            'to find sensitive information like AWS keys, secrets, and other credentials. '
-            '`-s` for secret, `-l` for link, `-k` for key.')
-    command(f'cat {subenumweb} | nuclei -t templates/credentials-disclosure-all.yaml -c 30 -o credentials-disclosure-nuclei.txt',
-            f'Scanning the target website with Nuclei using a broad `credentials-disclosure-all.yaml` template '
-            'to find any exposed credentials. `-c 30` sets 30 concurrent requests. Output to `credentials-disclosure-nuclei.txt`.')
-
-    print(f"[{INF}] Extracting S3 URLs from JS files")
-    command(r'cat alljs.txt | xargs -I {} curl -s {} | grep -oE "http[s]?://[^"]*.s3.amazonaws.com"',
-            'Downloading the content of each JavaScript file listed in `alljs.txt` using `curl`. '
-            'Then, `grep -oE` extracts (only matches) specific patterns '
-            'that indicate Amazon S3 URLs (e.g., `http://bucketname.s3.amazonaws.com`).')
-    print("")
-
-    # S3 bucket dorking with Google (manual part, for user reference)
-    print(f'\n{"="*70}')
-    print(f'[{INF}] Manual Google Dorking for AWS S3 Buckets')
-    print(f'{"="*70}\n')
-    print(f'[{WARN}] Remember to perform **Google dorking** for AWS S3 buckets manually using:')
-    print(f'        site:s3.amazonaws.com "{subenumweb}"')
-    print(f'        This Google Dork searches for pages indexed by Google that are hosted on `s3.amazonaws.com` '
-            f'and contain the target domain name (`{subenumweb}`). This helps find publicly exposed S3 buckets.')
-    print(f'        And for a more extensive dork:')
-    print(f'        (site:*.s3.amazonaws.com OR site:*.s3-external-1.amazonaws.com OR site:*.s3.duelstack.us-east-1.amazonaws.com OR site:*.s3.ap-south-1.amazonaws.com) "{subenumweb}"')
-    print(f'        This extended dork includes common S3 endpoint variations to cover more regions and types of S3 buckets.')
-    print(f'        Open each result; "Access Denied" means private, otherwise you\'ve accessed its contents.')
-    print("")
-
-    # Automation with Dork Eye (if you integrate it) and S3BucketMisconf
-    print(f'[{INF}] For automated Google Dorking for S3 buckets, consider using **Dork Eye**.')
-    print(f'        If you use Dork Eye, you can then feed its results into **S3BucketMisconf**:')
-    print(f'        (Note: S3BucketMisconf would need to be installed and accessible)')
-    print(f'        s3bucketmisconf -dorkeye_results your_dorkeye_results.txt')
-    print(f'        This outlines a potential workflow where `Dork Eye` automates the Google Dorking, '
-            f'and its output (`your_dorkeye_results.txt`) is then used as input for `S3BucketMisconf` '
-            f'to check for common S3 bucket misconfigurations (e.g., public write access).')
-    print("")
-
-    # Alternative S3 bucket discovery from subdomains
-    print(f'[{INF}] Filtering protocols from subdomains.txt and preparing for Java2S3.py')
-    command(f'cat subdomains.txt | grep -oP \'(?<=https?://).*\' > final.txt',
-            'Removing `http://` or `https://` prefixes from URLs in `subdomains.txt` '
-            'to prepare them for `java2s3.py`, which often expects just the hostname or path.')
-    print(f'[{INF}] Running java2s3.py (assuming it is available in your PATH)')
-    # You need to ensure java2s3.py is in your execution path or provide its full path.
-    # Replace 'target.com' with 'subenumweb' for dynamic target.
-    command(f'python java2s3.py final.txt {subenumweb} output.txt',
-            f'Executing `java2s3.py` with the filtered subdomains (`final.txt`) and the target domain (`{subenumweb}`). '
-            'This script is designed to enumerate S3 buckets related to a given domain. '
-            'Results are saved to `output.txt`.')
-    print("")
-
-    print(f'[{INF}] Extracting S3 Buckets lines from output.txt')
-    command('cat output.txt | grep -E "S3 Buckets: \\[.*?\\]" >> extracted_s3_buckets.txt',
-            'Filtering `output.txt` to extract lines specifically containing "S3 Buckets: [...]", '
-            'which typically list discovered S3 bucket names. Appended to `extracted_s3_buckets.txt`.')
-    print(f'[{INF}] Extracting full S3 bucket URLs (with object paths)')
-    command('cat output.txt | grep -oP \'https://[a-zA-Z0-9.-]*s3(\\.dualstack)?\\.[a-z0-9-]+\\.amazonaws\\.com/[^"\\s<>]+\' | sort -u >> full_s3_urls.txt',
-            'Extracting complete S3 bucket URLs (including paths to objects) from `output.txt` '
-            'using a regex that matches common S3 URL patterns. Unique URLs are saved to `full_s3_urls.txt`.')
-    print(f'[{INF}] Extracting S3 bucket hostnames (only domain part)')
-    command('cat output.txt | grep -oP \'([a-zA-Z0-9.-]*\\.s3(\\.dualstack)?\\.[a-z0-9-]+\\.amazonaws\\.com)\' | sort -u >> s3_hostnames.txt',
-            'Extracting just the hostnames of S3 buckets (e.g., `bucketname.s3.amazonaws.com`) '
-            'from `output.txt`. Unique hostnames are saved to `s3_hostnames.txt`.')
-    print("")
-
-    # S3Scanner integration (assuming it's installed and in PATH)
-    print(f'[{INF}] Running s3scanner to enumerate bucket permissions (requires a list of buckets)')
-    command(f's3scanner -bucket-file s3_hostnames.txt -enumerate -threads 10 | grep -oE \'AllUsers: \\[.*(READ|WRITE|FULL).\' >> s3scanner_results.txt',
-            'Using `s3scanner` to enumerate permissions of S3 buckets listed in `s3_hostnames.txt`. '
-            '`-enumerate` checks common permissions, `-threads 10` sets concurrency. '
-            '`grep -oE` then extracts lines indicating `AllUsers` have `READ`, `WRITE`, or `FULL` access, '
-            'which signifies critical misconfigurations. Results are appended to `s3scanner_results.txt`.')
-    print("")
-
-    # ========================================================================
-    # Section: GitHub Dorking and Secret Scanning
-    # Tags: #GitHub_Dorking #Secret_Scanning #Information_Disclosure
-    # ========================================================================
-    print(f'\n\n{"="*70}')
-    print(f'[{INF}] Starting GitHub Dorking for Sensitive Information')
-    print(f'{"="*70}\n')
-    sleep(2) # Pause for readability
-
-    github_dorks_content = f"""
-    --- GitHub Dorking Queries for {subenumweb} ---
-
-    Method 1: Searching for keywords in an organization\'s repositories
-    ------------------------------------------------------------------
-    * To find passwords: "{subenumweb}" password
-      Explanation: This dork searches GitHub for files containing both your target domain and the keyword "password".
-    * To find JSON-structured data for potential credentials: "{subenumweb}" password extension:json
-      Explanation: This narrows the search to JSON files containing your target domain and "password",
-                   often revealing API keys, database credentials, or other secrets.
-
-    Method 2: Using OR operators to find secret keys and API keys
-    ------------------------------------------------------------
-    * Generic key dork: org:{subenumweb} "aws_access_key_id" OR "aws_secret_access_key" OR "api_key" OR "secret_key" OR "client_secret"
-      Explanation: This dork specifically targets the GitHub organization associated with your target
-                   and searches for common patterns of cloud credentials (AWS) and generic API/secret keys.
-    * Environment files: org:{subenumweb} path:.env
-      Explanation: Searches for `.env` (environment) files within the organization's repositories.
-                   These files often contain sensitive configuration details, including API keys and database connections.
-    * Git configuration files: org:{subenumweb} path:.git
-      Explanation: Looks for `.git` configuration files, which can sometimes contain credentials or internal repository information.
-
-    --- End of GitHub Dorking Queries ---
-    """
-    with open("github_dorks.txt", "w") as f:
-        f.write(github_dorks_content)
-
-    print(f'[{INF}] GitHub dorking queries have been saved to github_dorks.txt')
-    print(f'[{WARN}] Remember to manually perform these GitHub dorks (e.g., by pasting them into the GitHub search bar on GitHub.com).')
-    sleep(3) # Pause for readability
-
-    # Trufflehog integration
-    print(f'\n[{INF}] Running Trufflehog for deeper secret scanning on GitHub organization.')
-    print(f'[{WARN}] Trufflehog requires GitHub authentication (personal access token).')
-    print(f'         Ensure you have trufflehog installed and configured for GitHub access.')
-    org_input = input(f"[{INF}] Enter the GitHub organization name for Trufflehog scan (e.g., nasa): ")
-    if org_input:
-        print(f'[{INF}] Executing: trufflehog github --org={org_input} --json')
-        print(f'[{INF}] The output will be piped to jq for pretty printing.')
-        print(f'[{INF}] This might take a while depending on the organization size.')
-        sleep(2)
-        command(f'trufflehog github --org={org_input} --json | jq . >> trufflehog_results.json',
-                f'Running `trufflehog` against the specified GitHub organization (`{org_input}`). '
-                '`trufflehog` scans repositories for hardcoded secrets, '
-                'and `--json` outputs results in JSON format. '
-                'The output is then piped to `jq` for pretty-printing and saved to `trufflehog_results.json`.')
-        print(f'[{OK}] Trufflehog scan completed. Results saved to trufflehog_results.json.')
-    else:
-        print(f'[{WARN}] No GitHub organization provided for Trufflehog scan. Skipping.')
-    print("")
-
+# ========================================================================
+# Script Entry Point
+# ========================================================================
 
 if __name__ == "__main__":
     welcome()
