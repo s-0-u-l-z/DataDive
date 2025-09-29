@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-DataDive - Advanced Security Reconnaissance and Vulnerability Scanner
-Author: s0ulz
-Version: 2.01
-
-This tool automates the discovery and analysis of security vulnerabilities across:
-- Subdomain enumeration and takeover detection
-- Open redirect vulnerability scanning
-- WAF bypass techniques
-- S3 bucket misconfiguration detection
-- GitHub secret leakage analysis
-"""
-
 import shutil
 from termcolor import colored
 import sys
