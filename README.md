@@ -1,50 +1,50 @@
-# 🚀 DataDive - Ultimate Reconnaissance Toolkit
+# DataDive - Ultimate Reconnaissance Toolkit
 
-## 🌟 Overview
+## Overview
 
-Welcome to **DataDive**, the all-in-one reconnaissance tool for security researchers and penetration testers! 🗏️💻 This powerhouse integrates multiple security tools to streamline subdomain discovery, live host testing, SSL vulnerability checks, and much more. Designed for Linux systems using `deb` package management, DataDive automates your reconnaissance workflow like never before! ⚡
+Welcome to **DataDive**, the all-in-one reconnaissance tool for security researchers and penetration testers! This toolkit integrates multiple security tools to streamline subdomain discovery, live host testing, SSL vulnerability checks, and more. Designed for Linux systems using `deb` package management, DataDive automates your reconnaissance workflow efficiently.
 
-This project is built around **GoPath**, leveraging its capabilities for high-speed directory scanning, making enumeration faster and more efficient. Unlike other tools, **GoPath does not need to be downloaded separately**—it runs straight from the source code within this repository. **DataDive** is a personal project aimed at creating a streamlined, powerful reconnaissance workflow with seamless automation. 🚀
+This project is built around **GoPath**, leveraging its capabilities for high-speed directory scanning. Unlike other tools, **GoPath does not need to be downloaded separately** - it runs directly from the source code included in this repository. **DataDive** focuses on creating a fast, automated, and powerful reconnaissance workflow.
 
-## 🔥 Features
+## Features
 
-✅ **Subdomain Enumeration** - Uses Subfinder to uncover hidden subdomains.\
-✅ **Live Host Detection** - Uses Httpx to verify active domains.\
-✅ **Favicon Hashing** - Extracts favicons & generates mmh3 hashes for Shodan & Zoomeye searches.\
-✅ **Website Screenshots** - Uses Aquatone to capture visuals of live sites.\
-✅ **Directory Enumeration** - Finds hidden files & directories with GoPath.\
-✅ **SSL Security Scanning** - Identifies SSL/TLS weaknesses using SSLyze.\
-✅ **Network Reconnaissance** - Uses Nmap for deep network scans.\
-✅ **Web Security Auditing** - Detects vulnerabilities in web servers with Nikto.\
-✅ **Exploit Detection** - Leverages Nuclei for known vulnerability scans.\
-✅ **Spyhunt Integration** - Automates attack surface discovery techniques.
+* **Subdomain Enumeration** - Uses Subfinder to uncover subdomains.
+* **Live Host Detection** - Uses Httpx to verify active domains.
+* **Favicon Hashing** - Extracts favicons and generates mmh3 hashes for Shodan and Zoomeye searches.
+* **Website Screenshots** - Uses Aquatone to capture visuals of live sites.
+* **Directory Enumeration** - Finds hidden files and directories with GoPath.
+* **SSL Security Scanning** - Identifies SSL/TLS weaknesses using SSLyze.
+* **Network Reconnaissance** - Uses Nmap for detailed scanning.
+* **Web Security Auditing** - Detects vulnerabilities in web servers with Nikto.
+* **Exploit Detection** - Uses Nuclei for vulnerability detection.
+* **Spyhunt Integration** - Automates attack surface discovery.
 
-## ⚡ Prerequisites
+## Prerequisites
 
-Ensure your system runs a **Linux distribution** with `apt` package management. You’ll need the following tools installed:
+Ensure your system runs a **Linux distribution** with `apt` package management. You will need the following tools installed:
 
-- `subfinder`
-- `httpx-toolkit`
-- `aquatone`
-- `GoPath` (for ultra-fast directory scanning!)
-- `sslyze`
-- `nmap`
-- `nikto`
-- `nuclei`
-- `spyhunt`
-- `python3`
-- Python libraries: `requests`, `mmh3`, `favicon`, `base64`
+* `subfinder`
+* `httpx-toolkit`
+* `aquatone`
+* `GoPath`
+* `sslyze`
+* `nmap`
+* `nikto`
+* `nuclei`
+* `spyhunt`
+* `python3`
+* Python libraries: `requests`, `mmh3`, `favicon`, `base64`
 
-## 🚀 Installation
+## Installation
 
-1️⃣ **Clone the Repository:**
+1. **Clone the Repository:**
 
 ```sh
 git clone <repository-url>
 cd DataDive
 ```
 
-2️⃣ **Install Required Dependencies:**
+2. **Install Required Dependencies:**
 
 ```sh
 sudo apt install subfinder httpx-toolkit nmap nikto
@@ -52,39 +52,34 @@ wget https://github.com/michenriksen/aquatone/releases/download/v1.7.0/aquatone_
 unzip aquatone_linux_amd64_1.7.0.zip
 ```
 
-3️⃣ **Install Python Libraries:**
+3. **Install Python Libraries:**
 
 ```sh
 pip install requests mmh3 favicon
 ```
 
-4️⃣ **GoPath for Directory Enumeration:**
+4. **GoPath for Directory Enumeration:**
 
-No separate installation needed! **GoPath runs directly from this repository**, using its built-in functionality to execute scans.
+No separate installation needed - **GoPath runs directly from this repository**.
 
-## 🎯 How to Use
+## How to Use
 
-🔹 **Run the script:**
+* **Run the script:**
 
 ```sh
 python3 datadive.py
 ```
 
-🔹 **Follow the prompts** to conduct reconnaissance effortlessly.\
-🔹 **Outputs** are automatically saved for later analysis.
+* Follow the prompts.
+* Outputs are saved for later analysis.
 
-## ⚠️ Important Notes
+## Important Notes
 
-⚡ **GoPath consumes a significant amount of system resources**, especially during large scans.\
-⚡ Some scans launch in **new terminal (****`konsole`****) windows** and run multiple threads simultaneously for maximum performance.\
-⚡ Ensure `konsole` is installed on your system before running the tool.\
-⚡ Default output filenames are prompted during execution.
+* **GoPath uses significant system resources**, especially on large scans.
+* Some scans launch in **new terminal (`konsole`) windows** and run multi-threaded.
+* Ensure `konsole` is installed before running the tool.
+* Default output filenames are requested during execution.
 
-## ⚖️ Disclaimer
+## Disclaimer
 
-This tool is meant for **security research & educational purposes only**. Unauthorized use on systems without permission is **illegal & unethical**. Stay responsible! 🔒
-
----
-
-✨ **Empower your recon game with DataDive – Because Knowledge is Power!** 
-
+This tool is for **security research and educational purposes only**. Using it on systems without permission is **illegal and unethical**. Use responsibly.
